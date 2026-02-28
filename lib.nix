@@ -168,9 +168,11 @@ let
             foldl' (acc': cat:
               let
                 entries = modResult.${cat};
+                existingIsScalar = acc' ? ${cat} && !(isPlainAttrs acc'.${cat});
               in
-              if !(isPlainAttrs entries) then
+              if !(isPlainAttrs entries) || existingIsScalar then
                 # Scalar category (formatter, a derivation, string, …)
+                # or a previous module already stored a scalar for this category
                 if acc' ? ${cat}
                 then throw "mkFlake: conflict on scalar output '${cat}' — defined by multiple modules"
                 else acc' // { ${cat} = entries; }
