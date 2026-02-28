@@ -1,0 +1,116 @@
+
+# 2026-01-05
+
+ - Deprecated `mkSubmoduleOptions`. Declare options directly instead, e.g.
+   `options.flake.foo = mkOption { ... }`. This works since Nixpkgs 22.05.
+
+ - Deprecated `mkDeferredModuleType` and `mkDeferredModuleOption`. Use
+   `mkPerSystemType` and `mkPerSystemOption` respectively for `perSystem`
+   type-merging. For other uses, use Nixpkgs' `types.deferredModuleWith`.
+
+   Note: flake-parts' implementation returns a list on merge, whereas Nixpkgs'
+   returns a single module. Add `apply = m: [ m ];` to your option if you need
+   the list behavior.
+
+# 2024-05-16
+
+ - **Breaking**: Minimum supported Nixpkgs lib version is now 23.05 (was 22.05),
+   due to the use of the `class` argument in `evalModules`.
+
+ - Add `class` to `evalModules` calls for imports "type checking".
+
+# 2023-05-30
+
+ - Fix a strictness issue in `perInput`, affecting `inputs'`, `self'`.
+   This has caused infinite recursions and potentially performance issues since
+   the introduction of these module arguments.
+
+# 2023-05-08
+
+ - Add [`importApply`](https://flake.parts/define-module-in-separate-file.html?highlight=importApply#importApply) for bringing variables from the flake scope into module files.
+
+ - Add `mkDeferredModuleOption` as a generic name for the implementation of `mkPerSystemOption`.
+
+# 2023-03-26
+
+ - Add preliminary support for `disabledModules` for modules exposed via the importable `flakeModules` module.
+   This requires a Nixpkgs of 2023-03-09 or newer.
+
+# 2023-01-05
+
+ - Add importable `easyOverlay` module for defining an overlay "easily" by reusing `perSystem`.
+   This is not for consuming overlays.
+
+# 2022-12-25
+
+ - Added a new `flake.flakeModules` option so a flake can expose a module
+   to be used in a downstream flake's flake-parts usage. `.flakeModule` is
+   now an alias for `.flakeModules.default`.
+
+   Option only available if `flake-parts.flakeModules.flakeModules` is imported.
+
+# 2022-12-17
+
+ - The old syntax `mkFlake { inherit self; }` is now strongly discouraged in
+ favor of:
+
+   ```nix
+   outputs = inputs@{ flake-parts, ... }:
+     flake-parts.lib.mkFlake { inherit inputs; } { /* module */ }
+   ```
+
+   This fixes an infinite recursion that occurs with the old syntax when
+   using the `inputs` module argument in `imports`.
+
+   If you're under the impression that this already worked, that's probably
+   because you were using `inputs` from the lexical scope (ie directly from
+   the flake outputs function arguments), rather than in a separate module file.
+
+
+# 2022-12-07
+
+ - The `darwinModules` option has been removed. This was added in the early days
+   without full consideration. The removal will have no effect on most flakes
+   considering that the [`flake` option](https://flake.parts/options/flake-parts.html#opt-flake)
+   allows any attribute to be set. This attribute and related attributes should
+   be added to the nix-darwin project instead.
+
+# 2022-10-11
+
+ - The `nixpkgs` input has been renamed to `nixpkgs-lib` to signify that the
+   only dependency is on the `lib` attribute, which can be provided by either
+   the `nixpkgs?dir=lib` subflake or by the `nixpkgs` flake itself.
+
+ - The templates now use the default, _fixed_ `nixpkgs?dir=lib` dependency instead
+   of a _following_ `nixpkgs` dependency.
+
+# 2022-05-25
+
+ - `perSystem` is not a `functionTo submodule` anymore, but a `deferredModule`,
+    which is a lot like a regular submodule, but possible to invoke multiple
+    times, for each `system`.
+
+    All `perSystem` value definitions must remove the `system: ` argument.
+    If you need `system` to be in scope, use the one in the module arguments.
+
+    ```diff
+    -perSystem = system: { config, lib, ... }:
+    +perSystem = { config, lib, system, ... }:
+    ```
+
+    All `perSystem` option declarations must now use `flake-parts-lib.mkPerSystemOption`.
+
+    ```nix
+    {
+      options.perSystem = mkPerSystemOption ({ config, ... }: {
+        options = {
+          # ...
+        };
+        # ...
+      });
+    }
+    ```
+
+ - `flake-modules-core` is now called `flake-parts`.
+
+ - `flake.overlay` has been removed in favor of `flake.overlays.default`.
