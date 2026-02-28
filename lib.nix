@@ -12,6 +12,7 @@ let
 
   inherit (builtins)
     attrNames
+    attrValues
     concatMap
     concatStringsSep
     elem
@@ -145,12 +146,27 @@ let
       else input
     ) flakeInputs;
 
-  # Build self' from self for a given system
+  # Build self' from self for a given system.
+  # Returns a lazy attrset keyed by standard flake per-system categories.
+  #
+  # We CANNOT enumerate self's keys (mapAttrs, attrNames, `?`) because self
+  # is the flake fixpoint being constructed — any structural access triggers
+  # infinite recursion.  Instead we pre-define per-system categories and
+  # access self.${cat}.${system} directly.  Each value is a lazy thunk that
+  # only forces when a module accesses that specific category.
+  perSystemCategories = [
+    "packages" "legacyPackages" "checks" "devShells" "apps" "formatter"
+  ];
+
   mkSelfPrime = self: system:
-    mapAttrs (_: v:
-      if isAttrs v && v ? ${system} then v.${system}
-      else {}
-    ) (if self != null then self else {});
+    listToAttrs (map (cat: {
+      name = cat;
+      # Access self.${cat}.${system} lazily — this thunk is only forced
+      # when a module reads self'.${cat}, at which point the fixpoint for
+      # that particular category has resolved.
+      value = self.${cat}.${system} or {};
+    }) perSystemCategories);
+
 
   # Build the collector module that merges all user module results
   # Only include modules that have an impl (produce results)
@@ -163,62 +179,33 @@ let
       inputs = listToAttrs (map (n: { name = n; value = { path = "/${n}"; }; }) callableNames);
       impl = { results, ... }:
         let
-          # Use attrNames to iterate with module names for error messages
-          moduleResultPairs = map (modName: { name = modName; value = results.${modName}; }) (attrNames results);
+          allResults = attrValues results;
           # Merge results by output category.
-          # Each module returns { category = value; ... }.  Values are
-          # collected lazily — we never force a category's value during
-          # merging so that thunks referencing `self` don't cause infinite
-          # recursion.  Conflict detection only checks key presence, not
-          # values.  The scalar-vs-attrset distinction is deferred to
-          # transpose time.
-          #
-          # acc tracks two attrsets per category:
-          #   merged.${cat} = the accumulated attrset of values
-          #   owners.${cat}.${key} = module name that first defined it
-          mergeOne = acc: { name, value }:
+          # Each module returns { category = value; ... }.  Category values
+          # are merged lazily — collision detection and the actual merge of
+          # entries happen inside a lazy `let` binding so that thunks
+          # referencing `self` are not forced during collection.
+          mergeOne = acc: modResult:
             foldl' (acc': cat:
-              if acc'.merged ? ${cat} then
+              if acc' ? ${cat} then
                 let
-                  existing = acc'.merged.${cat};
-                  entries = value.${cat};
-                  # Detect key collisions between modules for the same category.
-                  # Only check key presence (not values) to stay lazy and avoid
-                  # forcing thunks that may reference `self`.
-                  collisions =
-                    if isAttrs existing && isAttrs entries then
-                      filter (k: existing ? ${k}) (attrNames entries)
-                    else
-                      # Two scalars for the same category is always a conflict
-                      [ cat ];
-                  ownerInfo = acc'.owners.${cat} or {};
-                  collisionMsgs = map (k:
-                    "'${k}' (first set by module '${ownerInfo.${k} or "?"}', also set by '${name}')"
-                  ) collisions;
+                  existing = acc'.${cat};
+                  entries = modResult.${cat};
+                  # This whole binding is lazy — only forced when someone
+                  # accesses the category value in the final output, at
+                  # which point the flake fixpoint has resolved.
+                  merged = foldl' (catAcc: key:
+                    if catAcc ? ${key}
+                    then throw "mkFlake: conflict on ${cat}.${key} — defined by multiple modules"
+                    else catAcc // { ${key} = entries.${key}; }
+                  ) existing (attrNames entries);
                 in
-                if collisions != [] then
-                  throw "mkFlake: conflicting output key(s) in '${cat}': ${concatStringsSep ", " collisionMsgs}"
-                else
-                  {
-                    merged = acc'.merged // { ${cat} = existing // entries; };
-                    owners = acc'.owners // {
-                      ${cat} = ownerInfo // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
-                    };
-                  }
+                acc' // { ${cat} = merged; }
               else
-                {
-                  merged = acc'.merged // { ${cat} = value.${cat}; };
-                  owners = acc'.owners // {
-                    ${cat} =
-                      if isAttrs value.${cat} then
-                        listToAttrs (map (k: { name = k; value = name; }) (attrNames value.${cat}))
-                      else
-                        { ${cat} = name; };
-                  };
-                }
-            ) acc (attrNames value);
+                acc' // { ${cat} = modResult.${cat}; }
+            ) acc (attrNames modResult);
         in
-        (foldl' mergeOne { merged = {}; owners = {}; } moduleResultPairs).merged;
+        foldl' mergeOne {} allResults;
     };
 
   # Transpose { system -> { category.name } } to { category -> { system -> { name } } }
