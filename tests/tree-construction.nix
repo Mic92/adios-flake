@@ -9,7 +9,7 @@ let
 in
 {
   # Mixed module types in one tree
-  mixedModules = {
+  testMixedModules = {
     expr =
       let
         result = lib.mkFlake {
@@ -34,7 +34,7 @@ in
   };
 
   # perSystem + modules combined
-  perSystemAndModules = {
+  testPerSystemAndModules = {
     expr =
       let
         result = lib.mkFlake {
@@ -54,7 +54,7 @@ in
   };
 
   # Config options wired correctly
-  configOptions = {
+  testConfigOptions = {
     expr =
       let
         result = lib.mkFlake {
@@ -75,7 +75,7 @@ in
   };
 
   # Multiple categories from different modules
-  multipleCategories = {
+  testMultipleCategories = {
     expr =
       let
         result = lib.mkFlake {
@@ -97,7 +97,7 @@ in
   };
 
   # flake attrset merging with perSystem
-  flakeAndPerSystem = {
+  testFlakeAndPerSystem = {
     expr =
       let
         result = lib.mkFlake {

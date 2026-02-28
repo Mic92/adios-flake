@@ -23,19 +23,19 @@ let
 in
 {
   # Pure module produces same value for both systems
-  pureModuleSameValue = {
+  testPureModuleSameValue = {
     expr = result.packages.x86_64-linux.meta == result.packages.aarch64-linux.meta;
     expected = true;
   };
 
   # System-dependent module produces different values
-  sysModuleDifferentValues = {
+  testSysModuleDifferentValues = {
     expr = result.packages.x86_64-linux.sys != result.packages.aarch64-linux.sys;
     expected = true;
   };
 
   # System-dependent module has correct values
-  sysModuleCorrectValues = {
+  testSysModuleCorrectValues = {
     expr = {
       x86 = result.packages.x86_64-linux.sys;
       aarch = result.packages.aarch64-linux.sys;
@@ -47,7 +47,7 @@ in
   };
 
   # Pure module value is consistent
-  pureModuleValue = {
+  testPureModuleValue = {
     expr = result.packages.x86_64-linux.meta;
     expected = "v1";
   };

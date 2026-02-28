@@ -9,7 +9,7 @@ let
 in
 {
   # 6.1 Simple flake-parts template equivalent
-  simpleTemplate = {
+  testSimpleTemplate = {
     expr =
       let
         result = lib.mkFlake {
@@ -31,7 +31,7 @@ in
   };
 
   # 6.2 Multiple module styles: ergonomic function + native adios module + static attrset
-  multipleModuleStyles = {
+  testMultipleModuleStyles = {
     expr =
       let
         result = lib.mkFlake {
@@ -60,7 +60,7 @@ in
   };
 
   # 6.3 Third-party module configuration via config parameter
-  thirdPartyConfig = {
+  testThirdPartyConfig = {
     expr =
       let
         result = lib.mkFlake {
@@ -87,7 +87,7 @@ in
   };
 
   # 6.4 self is available in ergonomic functions
-  selfAvailable = {
+  testSelfAvailable = {
     expr =
       let
         fakeSelf = { outPath = "/my/flake"; rev = "abc123"; };
@@ -111,7 +111,7 @@ in
   };
 
   # 6.5 self' cross-module references via flake fixpoint
-  selfPrimeCrossModule = {
+  testSelfPrimeCrossModule = {
     expr =
       let
         result = lib.mkFlake {
@@ -137,7 +137,7 @@ in
   };
 
   # 6.6 withSystem in flake function (nixosConfigurations pattern)
-  withSystemFlake = {
+  testWithSystemFlake = {
     expr =
       let
         result = lib.mkFlake {
@@ -168,7 +168,7 @@ in
   };
 
   # 6.7 Nested adios submodule configuration via slash-path config keys
-  nestedSubmoduleConfig = {
+  testNestedSubmoduleConfig = {
     expr =
       let
         result = lib.mkFlake {

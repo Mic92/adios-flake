@@ -18,7 +18,7 @@ let
 in
 {
   # 1. Options-only native module is classified as native (has structural key "options")
-  optionsOnlyModule = {
+  testOptionsOnlyModule = {
     expr =
       let
         result = lib.mkFlake {
@@ -37,7 +37,7 @@ in
   };
 
   # 2. Full native module (options + inputs + impl)
-  fullNativeModule = {
+  testFullNativeModule = {
     expr = mkAndGetPkgs {
       modules = [
         {
@@ -51,7 +51,7 @@ in
   };
 
   # 3. Static attrset is normalized
-  staticAttrset = {
+  testStaticAttrset = {
     expr = mkAndGetPkgs {
       modules = [
         { packages.foo = "static-val"; }
@@ -61,7 +61,7 @@ in
   };
 
   # 4. Ergonomic function (system-dependent)
-  ergonomicFnSysDep = {
+  testErgonomicFnSysDep = {
     expr = mkAndGetPkgs {
       modules = [
         ({ pkgs, system, ... }: { packages.sys-info = system; })
@@ -71,7 +71,7 @@ in
   };
 
   # 5. Ergonomic function (system-independent)
-  ergonomicFnPure = {
+  testErgonomicFnPure = {
     expr = mkAndGetPkgs {
       modules = [
         ({ ... }: { packages.meta = "v1"; })
@@ -81,7 +81,7 @@ in
   };
 
   # 6. Edge case: attrset with only "modules" key is treated as native
-  modulesOnlyNative = {
+  testModulesOnlyNative = {
     expr =
       let
         result = lib.mkFlake {
@@ -105,7 +105,7 @@ in
   };
 
   # 7. Duplicate name detection
-  duplicateNameThrows = {
+  testDuplicateNameThrows = {
     expr = throws (lib.mkFlake {
       inputs = { nixpkgs = nixpkgs; };
       systems = [ sys ];
@@ -118,7 +118,7 @@ in
   };
 
   # 8. Mixed named + anonymous modules
-  mixedNaming = {
+  testMixedNaming = {
     expr = mkAndGetPkgs {
       modules = [
         { name = "named"; impl = { ... }: { packages.named = "named-val"; }; }

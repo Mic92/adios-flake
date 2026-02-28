@@ -6,7 +6,7 @@ let
 in
 {
   # Single category, multiple systems
-  singleCategory = {
+  testSingleCategory = {
     expr =
       let
         result = lib.mkFlake {
@@ -25,7 +25,7 @@ in
   };
 
   # Multiple categories
-  multipleCategories = {
+  testMultipleCategories = {
     expr =
       let
         result = lib.mkFlake {
@@ -53,7 +53,7 @@ in
   };
 
   # Category present in subset of systems (conditional output)
-  categorySubset = {
+  testCategorySubset = {
     expr =
       let
         result = lib.mkFlake {
