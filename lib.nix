@@ -52,7 +52,17 @@ let
     let
       # Normalize a single module with index for auto-naming
       normalizeOne = idx: mod:
-        if isFunction mod then
+        if builtins.isPath mod then
+          # Path: import it and use the file path for error messages.
+          # Replace '/' with '-' for the adios tree key (which uses '/'
+          # as a path separator) but keep the original path as `_file`.
+          let
+            pathStr = toString mod;
+            safeName = builtins.replaceStrings [ "/" ] [ "-" ] pathStr;
+            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs; };
+          in
+          normalized // { _file = pathStr; }
+        else if isFunction mod then
           normalizeFunction idx mod { inherit self flakeInputs; }
         else if isNativeModule mod then
           # Native adios module - use as-is, ensure it has a name
@@ -170,7 +180,7 @@ let
 
   # Build the collector module that merges all user module results
   # Only include modules that have an impl (produce results)
-  mkCollector = modules:
+  mkCollector = modules: resolveModuleName:
     let
       callableNames = map (m: m.name) (filter (m: m ? impl) modules);
     in
@@ -179,33 +189,59 @@ let
       inputs = listToAttrs (map (n: { name = n; value = { path = "/${n}"; }; }) callableNames);
       impl = { results, ... }:
         let
-          allResults = attrValues results;
+          # Pair each module result with its display name for error messages
+          modPairs = map (modName: {
+            name = resolveModuleName modName;
+            value = results.${modName};
+          }) (attrNames results);
+
           # Merge results by output category.
-          # Each module returns { category = value; ... }.  Category values
-          # are merged lazily — collision detection and the actual merge of
-          # entries happen inside a lazy `let` binding so that thunks
+          # Category values are merged lazily — collision detection and the
+          # actual merge happen inside a lazy `let` binding so that thunks
           # referencing `self` are not forced during collection.
-          mergeOne = acc: modResult:
+          #
+          # The accumulator tracks:
+          #   merged.${cat} = lazy merged attrset of values
+          #   owners.${cat}.${key} = name of module that first defined it
+          # The accumulator stores { merged, owners } per category.
+          # merged.${cat} = lazy attrset of merged values
+          # owners.${cat} = lazy attrset mapping key -> module name
+          # Both are only forced when the category is accessed in the
+          # final output, at which point the fixpoint has resolved.
+          mergeOne = acc: { name, value }:
             foldl' (acc': cat:
-              if acc' ? ${cat} then
+              if acc'.merged ? ${cat} then
                 let
-                  existing = acc'.${cat};
-                  entries = modResult.${cat};
-                  # This whole binding is lazy — only forced when someone
-                  # accesses the category value in the final output, at
-                  # which point the flake fixpoint has resolved.
+                  existing = acc'.merged.${cat};
+                  entries = value.${cat};
+                  prevOwners = acc'.owners.${cat};
+                  # All lazy — attrNames/foldl' here only runs when
+                  # someone accesses this category in the final output.
                   merged = foldl' (catAcc: key:
                     if catAcc ? ${key}
-                    then throw "mkFlake: conflict on ${cat}.${key} — defined by multiple modules"
+                    then throw "mkFlake: conflict on ${cat}.${key} — defined by module '${prevOwners.${key} or "?"}' and '${name}'"
                     else catAcc // { ${key} = entries.${key}; }
                   ) existing (attrNames entries);
+                  owners = prevOwners
+                    // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
                 in
-                acc' // { ${cat} = merged; }
+                {
+                  merged = acc'.merged // { ${cat} = merged; };
+                  owners = acc'.owners // { ${cat} = owners; };
+                }
               else
-                acc' // { ${cat} = modResult.${cat}; }
-            ) acc (attrNames modResult);
+                {
+                  merged = acc'.merged // { ${cat} = value.${cat}; };
+                  # Lazy: attrNames only forced when collision is checked
+                  owners = acc'.owners // {
+                    ${cat} = listToAttrs (map (k: {
+                      name = k; value = name;
+                    }) (attrNames value.${cat}));
+                  };
+                }
+            ) acc (attrNames value);
         in
-        foldl' mergeOne {} allResults;
+        foldl' mergeOne { merged = {}; owners = {}; } modPairs;
     };
 
   # Transpose { system -> { category.name } } to { category -> { system -> { name } } }
@@ -250,8 +286,15 @@ let
 
       moduleNames = map (m: m.name) normalizedModules;
 
+      # Map safe module names back to file paths for error messages
+      moduleFileMap = listToAttrs (
+        filter (x: x.value != null)
+          (map (m: { name = m.name; value = m._file or null; }) normalizedModules)
+      );
+      resolveModuleName = name: moduleFileMap.${name} or name;
+
       # Build the collector
-      collector = mkCollector normalizedModules;
+      collector = mkCollector normalizedModules resolveModuleName;
 
       # Build the /nixpkgs internal module
       nixpkgsModule = {
@@ -310,11 +353,12 @@ let
         let collectorPath = "/_collector";
         in tree.modules._collector {};
 
-      firstResults = collectResults firstTree;
+      # Collector returns { merged, owners } per system
+      firstCollected = collectResults firstTree;
 
       # Override for subsequent systems — only pass changed options (/nixpkgs)
       # so adios's diff propagation correctly memoizes unchanged modules
-      subsequentResults = listToAttrs (map (sys:
+      subsequentCollected = listToAttrs (map (sys:
         let
           overriddenTree = firstTree.override {
             options = {
@@ -324,13 +368,17 @@ let
               };
             };
           };
-          results = collectResults overriddenTree;
         in
-        { name = sys; value = results; }
+        { name = sys; value = collectResults overriddenTree; }
       ) remainingSystems);
 
-      # All per-system results
-      perSystemResults = { ${firstSystem} = firstResults; } // subsequentResults;
+      allCollected = { ${firstSystem} = firstCollected; } // subsequentCollected;
+
+      # Split merged results for transposition
+      perSystemResults = mapAttrs (_: c: c.merged) allCollected;
+
+      # Per-system ownership maps for error messages
+      perSystemOwners = mapAttrs (_: c: c.owners) allCollected;
 
       # Transpose to flake output shape
       transposed = transpose perSystemResults;
@@ -390,9 +438,14 @@ let
                       else if isAttrs tSys && isAttrs fSys then
                         let
                           collisions = filter (k: tSys ? ${k}) (attrNames fSys);
+                          # Look up which module defined each colliding key
+                          sysOwners = perSystemOwners.${sys}.${cat} or {};
+                          collisionMsgs = map (k:
+                            "'${k}' defined by module '${sysOwners.${k} or "?"}' and by the 'flake' argument in flake.nix"
+                          ) collisions;
                         in
                         if collisions != [] then
-                          throw "mkFlake: flake attrs collide with per-system outputs in '${cat}.${sys}': ${concatStringsSep ", " collisions}"
+                          throw "mkFlake: conflict on ${cat}.${sys} — ${concatStringsSep "; " collisionMsgs}"
                         else
                           tSys // fSys
                       else
