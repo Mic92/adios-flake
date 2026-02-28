@@ -149,6 +149,23 @@ adios-flake.lib.mkFlake {
 };
 ```
 
+### Multi-Module Flake
+
+Modules can be passed as **paths** — the parent directory name is used in
+error messages (e.g., `conflict on checks.foo — defined by module '.../pkgs/flake-module.nix'`):
+
+```nix
+adios-flake.lib.mkFlake {
+  inherit inputs self;
+  systems = [ "x86_64-linux" "aarch64-darwin" ];
+  modules = [
+    ./pkgs/flake-module.nix
+    ./checks/flake-module.nix
+    ./devshell/flake-module.nix
+  ];
+};
+```
+
 ### System-Agnostic Outputs with `withSystem`
 
 ```nix

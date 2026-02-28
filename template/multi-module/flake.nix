@@ -11,8 +11,8 @@
       inherit inputs self;
       systems = [ "x86_64-linux" "aarch64-darwin" ];
       modules = [
-        # Import additional modules
-        (import ./hello/flake-module.nix)
+        # Pass paths directly
+        ./hello/flake-module.nix
       ];
       perSystem = { pkgs, inputs', ... }: {
         # Per-system attributes can be defined here. The inputs'
