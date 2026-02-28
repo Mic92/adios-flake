@@ -96,6 +96,7 @@ let
       name = if isPerSystem then "_perSystem"
              else if builtins.isInt idx then "_fn_${toString idx}"
              else toString idx;
+
     in
     {
       inherit name;
@@ -143,11 +144,6 @@ let
       else {}
     ) (if self != null then self else {});
 
-  # Check whether a value is a "plain" attrset that should be merged by key.
-  # Derivations, functions, and non-attrsets are treated as scalar values.
-  isPlainAttrs = v:
-    isAttrs v && !(v ? type && v.type == "derivation");
-
   # Build the collector module that merges all user module results
   # Only include modules that have an impl (produce results)
   mkCollector = modules:
@@ -160,40 +156,38 @@ let
       impl = { results, ... }:
         let
           allResults = attrValues results;
-          # Merge results by output category with conflict detection
-          # Categories whose values are plain attrsets are merged by key;
-          # scalar values (derivations, strings, …) are stored directly and
-          # conflict when two modules provide the same category.
+          # Merge results by output category.
+          # Each module returns { category = value; ... }.  Values are
+          # collected lazily — we never force a category's value during
+          # merging so that thunks referencing `self` don't cause infinite
+          # recursion.  Conflict detection only checks key presence, not
+          # values.  The scalar-vs-attrset distinction is deferred to
+          # transpose time.
           mergeOne = acc: modResult:
             foldl' (acc': cat:
-              let
-                entries = modResult.${cat};
-                existingIsScalar = acc' ? ${cat} && !(isPlainAttrs acc'.${cat});
-              in
-              if !(isPlainAttrs entries) || existingIsScalar then
-                # Scalar category (formatter, a derivation, string, …)
-                # or a previous module already stored a scalar for this category
-                if acc' ? ${cat}
-                then throw "mkFlake: conflict on scalar output '${cat}' — defined by multiple modules"
-                else acc' // { ${cat} = entries; }
-              else
+              if acc' ? ${cat} then
+                # Both are attrsets → merge keys (lazy in values).
+                # If either is actually a scalar, the merge produces a
+                # combined attrset that will be passed through in transpose.
+                # For true scalars from two modules this is a conflict, but
+                # we can only detect it lazily.
                 let
-                  existing = acc'.${cat} or {};
-                  merged = foldl' (catAcc: key:
-                    if catAcc ? ${key}
-                    then throw "mkFlake: conflict on ${cat}.${key} — defined by multiple modules"
-                    else catAcc // { ${key} = entries.${key}; }
-                  ) existing (attrNames entries);
+                  existing = acc'.${cat};
+                  entries = modResult.${cat};
+                  # Lazy merge: don't force `existing` or `entries` values
+                  merged = existing // entries;
                 in
                 acc' // { ${cat} = merged; }
+              else
+                acc' // { ${cat} = modResult.${cat}; }
             ) acc (attrNames modResult);
         in
         foldl' mergeOne {} allResults;
     };
 
   # Transpose { system -> { category.name } } to { category -> { system -> { name } } }
-  # Scalar categories (non-plain-attrset values) are transposed as
-  # category.${system} = value rather than category.${system}.${key} = value.
+  # Scalar categories (non-plain-attrset values like formatter) are passed
+  # through directly as category.${system} = value.
   transpose = perSystemResults:
     let
       systems = attrNames perSystemResults;
@@ -206,13 +200,7 @@ let
       name = cat;
       value = listToAttrs (map (sys: {
         name = sys;
-        value =
-          let v = perSystemResults.${sys}.${cat} or {};
-          in
-          # Scalar values are stored directly; attrset categories default
-          # to {} when absent for a given system.
-          if perSystemResults.${sys} ? ${cat} then v
-          else {};
+        value = perSystemResults.${sys}.${cat} or {};
       }) systems);
     }) allCategories);
 

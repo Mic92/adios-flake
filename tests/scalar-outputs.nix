@@ -7,9 +7,6 @@ let
   prelude = import ./prelude.nix;
   inherit (prelude) lib nixpkgs sys;
 
-  throws = expr:
-    let result = builtins.tryEval (builtins.deepSeq expr expr);
-    in !result.success;
 in
 {
   # A module that returns a scalar (non-attrset) value for a per-system
@@ -71,30 +68,9 @@ in
     };
   };
 
-  # Scalar then attrset for the same category gives a clean conflict,
-  # not an internal crash from calling attrNames on a non-attrset.
-  testScalarThenAttrsetConflict = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
-      systems = [ sys ];
-      modules = [
-        ({ pkgs, ... }: { foo = "scalar"; })
-        ({ pkgs, ... }: { foo.bar = "attrset"; })
-      ];
-    });
-    expected = true;
-  };
-
-  # Attrset then scalar for the same category also gives a clean conflict.
-  testAttrsetThenScalarConflict = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
-      systems = [ sys ];
-      modules = [
-        ({ pkgs, ... }: { foo.bar = "attrset"; })
-        ({ pkgs, ... }: { foo = "scalar"; })
-      ];
-    });
-    expected = true;
-  };
+  # NOTE: scalar/attrset type conflicts between modules for the same category
+  # are NOT detected eagerly.  The collector merges lazily with // to avoid
+  # forcing values that may reference `self` (which would cause infinite
+  # recursion).  If two modules set the same category to different types,
+  # the result is undefined and will error at access time.
 }
