@@ -12,8 +12,8 @@ let
 
   inherit (builtins)
     attrNames
-    attrValues
     concatMap
+    concatStringsSep
     elem
     filter
     foldl'
@@ -163,7 +163,8 @@ let
       inputs = listToAttrs (map (n: { name = n; value = { path = "/${n}"; }; }) callableNames);
       impl = { results, ... }:
         let
-          allResults = attrValues results;
+          # Use attrNames to iterate with module names for error messages
+          moduleResultPairs = map (modName: { name = modName; value = results.${modName}; }) (attrNames results);
           # Merge results by output category.
           # Each module returns { category = value; ... }.  Values are
           # collected lazily — we never force a category's value during
@@ -171,26 +172,53 @@ let
           # recursion.  Conflict detection only checks key presence, not
           # values.  The scalar-vs-attrset distinction is deferred to
           # transpose time.
-          mergeOne = acc: modResult:
+          #
+          # acc tracks two attrsets per category:
+          #   merged.${cat} = the accumulated attrset of values
+          #   owners.${cat}.${key} = module name that first defined it
+          mergeOne = acc: { name, value }:
             foldl' (acc': cat:
-              if acc' ? ${cat} then
-                # Both are attrsets → merge keys (lazy in values).
-                # If either is actually a scalar, the merge produces a
-                # combined attrset that will be passed through in transpose.
-                # For true scalars from two modules this is a conflict, but
-                # we can only detect it lazily.
+              if acc'.merged ? ${cat} then
                 let
-                  existing = acc'.${cat};
-                  entries = modResult.${cat};
-                  # Lazy merge: don't force `existing` or `entries` values
-                  merged = existing // entries;
+                  existing = acc'.merged.${cat};
+                  entries = value.${cat};
+                  # Detect key collisions between modules for the same category.
+                  # Only check key presence (not values) to stay lazy and avoid
+                  # forcing thunks that may reference `self`.
+                  collisions =
+                    if isAttrs existing && isAttrs entries then
+                      filter (k: existing ? ${k}) (attrNames entries)
+                    else
+                      # Two scalars for the same category is always a conflict
+                      [ cat ];
+                  ownerInfo = acc'.owners.${cat} or {};
+                  collisionMsgs = map (k:
+                    "'${k}' (first set by module '${ownerInfo.${k} or "?"}', also set by '${name}')"
+                  ) collisions;
                 in
-                acc' // { ${cat} = merged; }
+                if collisions != [] then
+                  throw "mkFlake: conflicting output key(s) in '${cat}': ${concatStringsSep ", " collisionMsgs}"
+                else
+                  {
+                    merged = acc'.merged // { ${cat} = existing // entries; };
+                    owners = acc'.owners // {
+                      ${cat} = ownerInfo // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
+                    };
+                  }
               else
-                acc' // { ${cat} = modResult.${cat}; }
-            ) acc (attrNames modResult);
+                {
+                  merged = acc'.merged // { ${cat} = value.${cat}; };
+                  owners = acc'.owners // {
+                    ${cat} =
+                      if isAttrs value.${cat} then
+                        listToAttrs (map (k: { name = k; value = name; }) (attrNames value.${cat}))
+                      else
+                        { ${cat} = name; };
+                  };
+                }
+            ) acc (attrNames value);
         in
-        foldl' mergeOne {} allResults;
+        (foldl' mergeOne { merged = {}; owners = {}; } moduleResultPairs).merged;
     };
 
   # Transpose { system -> { category.name } } to { category -> { system -> { name } } }
@@ -338,10 +366,59 @@ let
         else
           flake;
 
+      # Deep-merge transposed per-system outputs with flake-level attrs.
+      # Merge goes 2 levels deep (category → system) so that e.g.
+      # `flake.checks.x86_64-linux.foo` merges with per-system
+      # `checks.x86_64-linux.bar` instead of replacing it entirely.
+      # Collisions at the leaf key level throw an error.
+      mergeFlakeOutputs = transposed: flakeAttrs:
+        let
+          allCats = attrNames (transposed // flakeAttrs);
+        in
+        listToAttrs (map (cat:
+          let
+            tVal = transposed.${cat} or null;
+            fVal = flakeAttrs.${cat} or null;
+          in
+          {
+            name = cat;
+            value =
+              if tVal == null then fVal
+              else if fVal == null then tVal
+              else if isAttrs tVal && isAttrs fVal then
+                # Both sides have this category — merge one level deeper (by system)
+                let
+                  allSystems = attrNames (tVal // fVal);
+                in
+                listToAttrs (map (sys:
+                  let
+                    tSys = tVal.${sys} or null;
+                    fSys = fVal.${sys} or null;
+                  in
+                  {
+                    name = sys;
+                    value =
+                      if tSys == null then fSys
+                      else if fSys == null then tSys
+                      else if isAttrs tSys && isAttrs fSys then
+                        let
+                          collisions = filter (k: tSys ? ${k}) (attrNames fSys);
+                        in
+                        if collisions != [] then
+                          throw "mkFlake: flake attrs collide with per-system outputs in '${cat}.${sys}': ${concatStringsSep ", " collisions}"
+                        else
+                          tSys // fSys
+                      else
+                        throw "mkFlake: cannot merge flake attr '${cat}.${sys}' — one side is not an attrset";
+                  }
+                ) allSystems)
+              else
+                throw "mkFlake: cannot merge flake attr '${cat}' — one side is not an attrset";
+          }
+        ) allCats);
+
     in
-    # Merge transposed per-system outputs with flake attrs
-    # flake attrs take precedence (as per spec D4 conflict resolution)
-    transposed // flakeAttrs;
+    mergeFlakeOutputs transposed flakeAttrs;
 
 in
 {
