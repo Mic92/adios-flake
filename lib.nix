@@ -96,7 +96,15 @@ let
       name = if isPerSystem then "_perSystem"
              else if builtins.isInt idx then "_fn_${toString idx}"
              else toString idx;
-
+      # Extract lib from the nixpkgs flake input (cheap — no package eval).
+      # The nixpkgs flake always exposes a top-level `lib`.  When nixpkgs
+      # is a plain path (e.g. <nixpkgs> in tests), fall back to importing
+      # just the lib/ subdirectory — no package evaluation needed.
+      lib =
+        if flakeInputs ? nixpkgs then
+          flakeInputs.nixpkgs.lib or (import (flakeInputs.nixpkgs + "/lib"))
+        else
+          null;
     in
     {
       inherit name;
@@ -111,13 +119,13 @@ let
               self' = mkSelfPrime self system;
             in
             fn (builtins.intersectAttrs args {
-              inherit pkgs system inputs' self self';
+              inherit lib pkgs system inputs' self self';
             })
         else
           { ... }:
-            fn (builtins.intersectAttrs args {
+            fn (builtins.intersectAttrs args ({
               inherit self;
-            });
+            } // (if lib != null then { inherit lib; } else {})));
     };
 
   # Normalize a static attrset module
@@ -313,6 +321,7 @@ let
       transposed = transpose perSystemResults;
 
       # Handle flake parameter (attrset or function)
+      lib = flakeInputs.nixpkgs.lib or null;
       withSystem = system: fn:
         let
           pkgs = nixpkgsFor system;
@@ -320,7 +329,7 @@ let
           self' = mkSelfPrime self system;
         in
         fn (builtins.intersectAttrs (functionArgs fn) {
-          inherit pkgs system inputs' self';
+          inherit lib pkgs system inputs' self';
         });
 
       flakeAttrs =

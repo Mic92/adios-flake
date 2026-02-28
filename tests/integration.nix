@@ -136,6 +136,38 @@ in
     };
   };
 
+  # lib is available from nixpkgs flake input without forcing pkgs eval
+  testLibAvailable = {
+    expr =
+      let
+        result = lib.mkFlake {
+          inputs = { nixpkgs = nixpkgs; };
+          systems = [ sys ];
+          perSystem = { lib, ... }: {
+            packages.greeting = lib.concatStringsSep ", " [ "hello" "world" ];
+          };
+        };
+      in
+      result.packages.${sys}.greeting;
+    expected = "hello, world";
+  };
+
+  # lib in system-independent module
+  testLibInPureModule = {
+    expr =
+      let
+        result = lib.mkFlake {
+          inputs = { nixpkgs = nixpkgs; };
+          systems = [ sys ];
+          modules = [
+            ({ lib, ... }: { packages.x = lib.optionalString true "yes"; })
+          ];
+        };
+      in
+      result.packages.${sys}.x;
+    expected = "yes";
+  };
+
   # 6.6 withSystem in flake function (nixosConfigurations pattern)
   testWithSystemFlake = {
     expr =
