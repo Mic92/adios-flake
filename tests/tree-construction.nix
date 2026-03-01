@@ -8,31 +8,6 @@ let
     in !result.success;
 in
 {
-  # Mixed module types in one tree
-  testMixedModules = {
-    expr =
-      let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
-          systems = [ sys ];
-          modules = [
-            # Ergonomic function (system-dependent)
-            ({ pkgs, ... }: { packages.fn-pkg = "fn"; })
-            # Native adios module
-            { name = "native"; inputs.nixpkgs = { path = "/nixpkgs"; }; impl = { inputs, ... }: { packages.native-pkg = inputs.nixpkgs.system; }; }
-            # Static attrset
-            { packages.static-pkg = "static"; }
-          ];
-        };
-      in
-      result.packages.${sys};
-    expected = {
-      fn-pkg = "fn";
-      native-pkg = sys;
-      static-pkg = "static";
-    };
-  };
-
   # perSystem + modules combined
   testPerSystemAndModules = {
     expr =

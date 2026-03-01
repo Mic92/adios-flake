@@ -30,9 +30,65 @@ let
     ;
 
   # Check if an attrset is a native adios module (has structural keys)
-  adiosStructuralKeys = [ "options" "inputs" "impl" "modules" ];
+  adiosStructuralKeys = [ "options" "inputs" "impl" "modules" "outputs" ];
   isNativeModule = m:
     isAttrs m && builtins.any (key: m ? ${key}) adiosStructuralKeys;
+
+  # Default output category declarations.
+  # These are always present even when no module declares outputs.
+  defaultOutputDeclarations = {
+    packages      = { type = "attrset"; };
+    legacyPackages = { type = "attrset"; };
+    checks        = { type = "attrset"; };
+    devShells     = { type = "attrset"; };
+    apps          = { type = "attrset"; };
+    formatter     = { type = "scalar"; };
+  };
+
+  # Scan normalized modules for `outputs` declarations and merge with defaults.
+  # Throws on conflicting merge types for the same category.
+  collectOutputDeclarations = modules:
+    let
+      # Collect all (moduleName, category, type) triples from module outputs
+      modulesWithOutputs = filter (m: m ? outputs) modules;
+
+      # Fold over modules, merging their declarations
+      collected = foldl' (acc: mod:
+        foldl' (acc': cat:
+          let
+            newType = mod.outputs.${cat}.type;
+            modName = mod.name or "?";
+          in
+          if acc'.declarations ? ${cat} then
+            if acc'.declarations.${cat}.type != newType then
+              throw "mkFlake: output category '${cat}' declared as '${acc'.declarations.${cat}.type}' by module '${acc'.declaredBy.${cat}}' and '${newType}' by module '${modName}'"
+            else
+              # Consistent redeclaration — keep existing
+              acc'
+          else
+            {
+              declarations = acc'.declarations // { ${cat} = { type = newType; }; };
+              declaredBy = acc'.declaredBy // { ${cat} = modName; };
+            }
+        ) acc (attrNames mod.outputs)
+      ) { declarations = {}; declaredBy = {}; } modulesWithOutputs;
+
+      # Merge with defaults: module declarations override defaults,
+      # but check for conflicts with defaults too
+      mergedWithDefaults = foldl' (acc: cat:
+        let
+          defaultType = defaultOutputDeclarations.${cat}.type;
+        in
+        if acc ? ${cat} then
+          if acc.${cat}.type != defaultType then
+            throw "mkFlake: output category '${cat}' declared as '${acc.${cat}.type}' by module '${collected.declaredBy.${cat}}' but default type is '${defaultType}'"
+          else
+            acc
+        else
+          acc // { ${cat} = { type = defaultType; }; }
+      ) collected.declarations (attrNames defaultOutputDeclarations);
+    in
+    mergedWithDefaults;
 
   # System-dependent argument names
   systemDepArgs = [ "pkgs" "system" "inputs'" "self'" ];
@@ -48,6 +104,7 @@ let
     , perSystem ? null
     , self ? null
     , flakeInputs ? {}
+    , getSelfPrime
     }:
     let
       # Normalize a single module with index for auto-naming
@@ -59,11 +116,11 @@ let
           let
             pathStr = toString mod;
             safeName = builtins.replaceStrings [ "/" ] [ "-" ] pathStr;
-            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs; };
+            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime; };
           in
           normalized // { _file = pathStr; }
         else if isFunction mod then
-          normalizeFunction idx mod { inherit self flakeInputs; }
+          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime; }
         else if isNativeModule mod then
           # Native adios module - use as-is, ensure it has a name
           mod // { name = mod.name or "_native_${toString idx}"; }
@@ -77,7 +134,7 @@ let
       # Add perSystem if provided
       perSystemModule =
         if perSystem != null then
-          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs; isPerSystem = true; }) ]
+          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime; isPerSystem = true; }) ]
         else
           [];
 
@@ -99,8 +156,9 @@ let
     then throw "mkFlake: duplicate module name(s): ${builtins.concatStringsSep ", " dups}"
     else allModules;
 
-  # Normalize an ergonomic function module
-  normalizeFunction = idx: fn: { self, flakeInputs, isPerSystem ? false }:
+  # Normalize an ergonomic function module.
+  # getSelfPrime: system → self' attrset (provided lazily by mkFlake)
+  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, isPerSystem ? false }:
     let
       args = functionArgs fn;
       sysDep = isSystemDependent fn;
@@ -127,7 +185,7 @@ let
               system = inputs.nixpkgs.system;
               pkgs = inputs.nixpkgs.pkgs;
               inputs' = mkInputsPrime flakeInputs system;
-              self' = mkSelfPrime self system;
+              self' = getSelfPrime system;
             in
             fn (builtins.intersectAttrs args {
               inherit lib pkgs system inputs' self self';
@@ -157,32 +215,36 @@ let
     ) flakeInputs;
 
   # Build self' from self for a given system.
-  # Returns a lazy attrset keyed by standard flake per-system categories.
+  # Returns a lazy attrset keyed by per-system categories derived from
+  # output declarations.
   #
   # We CANNOT enumerate self's keys (mapAttrs, attrNames, `?`) because self
   # is the flake fixpoint being constructed — any structural access triggers
-  # infinite recursion.  Instead we pre-define per-system categories and
+  # infinite recursion.  Instead we use the pre-collected category names and
   # access self.${cat}.${system} directly.  Each value is a lazy thunk that
   # only forces when a module accesses that specific category.
-  perSystemCategories = [
-    "packages" "legacyPackages" "checks" "devShells" "apps" "formatter"
-  ];
-
-  mkSelfPrime = self: system:
+  mkSelfPrime = categories: self: system:
     listToAttrs (map (cat: {
       name = cat;
       # Access self.${cat}.${system} lazily — this thunk is only forced
       # when a module reads self'.${cat}, at which point the fixpoint for
       # that particular category has resolved.
       value = self.${cat}.${system} or {};
-    }) perSystemCategories);
+    }) categories);
 
 
-  # Build the collector module that merges all user module results
-  # Only include modules that have an impl (produce results)
-  mkCollector = modules: resolveModuleName:
+  # Build the collector module that merges all user module results.
+  # Only include modules that have an impl (produce results).
+  # outputDeclarations: category→{type} map for merge type awareness.
+  mkCollector = modules: resolveModuleName: outputDeclarations:
     let
       callableNames = map (m: m.name) (filter (m: m ? impl) modules);
+
+      # Look up the merge type for a category.  Declared categories use their
+      # declared type; undeclared categories (from ergonomic modules) default
+      # to "attrset".
+      mergeTypeOf = cat:
+        (outputDeclarations.${cat} or { type = "attrset"; }).type;
     in
     {
       name = "_collector";
@@ -200,45 +262,58 @@ let
           # actual merge happen inside a lazy `let` binding so that thunks
           # referencing `self` are not forced during collection.
           #
-          # The accumulator tracks:
-          #   merged.${cat} = lazy merged attrset of values
-          #   owners.${cat}.${key} = name of module that first defined it
           # The accumulator stores { merged, owners } per category.
-          # merged.${cat} = lazy attrset of merged values
-          # owners.${cat} = lazy attrset mapping key -> module name
-          # Both are only forced when the category is accessed in the
-          # final output, at which point the fixpoint has resolved.
+          # For attrset categories:
+          #   merged.${cat} = lazy attrset of merged values
+          #   owners.${cat} = lazy attrset mapping key -> module name
+          # For scalar categories:
+          #   merged.${cat} = the scalar value
+          #   owners.${cat} = module name string (single owner)
           mergeOne = acc: { name, value }:
             foldl' (acc': cat:
-              if acc'.merged ? ${cat} then
-                let
-                  existing = acc'.merged.${cat};
-                  entries = value.${cat};
-                  prevOwners = acc'.owners.${cat};
-                  # All lazy — attrNames/foldl' here only runs when
-                  # someone accesses this category in the final output.
-                  merged = foldl' (catAcc: key:
-                    if catAcc ? ${key}
-                    then throw "mkFlake: conflict on ${cat}.${key} — defined by module '${prevOwners.${key} or "?"}' and '${name}'"
-                    else catAcc // { ${key} = entries.${key}; }
-                  ) existing (attrNames entries);
-                  owners = prevOwners
-                    // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
-                in
-                {
-                  merged = acc'.merged // { ${cat} = merged; };
-                  owners = acc'.owners // { ${cat} = owners; };
-                }
+              let
+                catType = mergeTypeOf cat;
+              in
+              if catType == "scalar" then
+                # Scalar merge: exactly one provider allowed
+                if acc'.merged ? ${cat} then
+                  throw "mkFlake: scalar output '${cat}' defined by module '${acc'.owners.${cat}}' and '${name}'"
+                else
+                  {
+                    merged = acc'.merged // { ${cat} = value.${cat}; };
+                    owners = acc'.owners // { ${cat} = name; };
+                  }
               else
-                {
-                  merged = acc'.merged // { ${cat} = value.${cat}; };
-                  # Lazy: attrNames only forced when collision is checked
-                  owners = acc'.owners // {
-                    ${cat} = listToAttrs (map (k: {
-                      name = k; value = name;
-                    }) (attrNames value.${cat}));
-                  };
-                }
+                # Attrset merge with collision detection
+                if acc'.merged ? ${cat} then
+                  let
+                    existing = acc'.merged.${cat};
+                    entries = value.${cat};
+                    prevOwners = acc'.owners.${cat};
+                    # All lazy — attrNames/foldl' here only runs when
+                    # someone accesses this category in the final output.
+                    merged = foldl' (catAcc: key:
+                      if catAcc ? ${key}
+                      then throw "mkFlake: conflict on ${cat}.${key} — defined by module '${prevOwners.${key} or "?"}' and '${name}'"
+                      else catAcc // { ${key} = entries.${key}; }
+                    ) existing (attrNames entries);
+                    owners = prevOwners
+                      // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
+                  in
+                  {
+                    merged = acc'.merged // { ${cat} = merged; };
+                    owners = acc'.owners // { ${cat} = owners; };
+                  }
+                else
+                  {
+                    merged = acc'.merged // { ${cat} = value.${cat}; };
+                    # Lazy: attrNames only forced when collision is checked
+                    owners = acc'.owners // {
+                      ${cat} = listToAttrs (map (k: {
+                        name = k; value = name;
+                      }) (attrNames value.${cat}));
+                    };
+                  }
             ) acc (attrNames value);
         in
         foldl' mergeOne { merged = {}; owners = {}; } modPairs;
@@ -278,9 +353,22 @@ let
     let
       flakeInputs = builtins.removeAttrs inputs [ "self" ];
 
+      # Collect output declarations from modules + defaults.
+      # This is computed lazily — it only inspects the `outputs` field of
+      # native modules (structural access), not `impl`, so it's safe to
+      # reference normalizedModules here even though normalizedModules
+      # captures getSelfPrime which captures outputDeclarations.
+      outputDeclarations = collectOutputDeclarations normalizedModules;
+
+      # Category names derived from output declarations (for self')
+      categoryNames = attrNames outputDeclarations;
+
+      # getSelfPrime: system → self' — captures categories lazily
+      getSelfPrime = mkSelfPrime categoryNames self;
+
       # Normalize all user modules
       normalizedModules = normalizeModules {
-        inherit modules perSystem self;
+        inherit modules perSystem self getSelfPrime;
         inherit flakeInputs;
       };
 
@@ -294,7 +382,7 @@ let
       resolveModuleName = name: moduleFileMap.${name} or name;
 
       # Build the collector
-      collector = mkCollector normalizedModules resolveModuleName;
+      collector = mkCollector normalizedModules resolveModuleName outputDeclarations;
 
       # Build the /nixpkgs internal module
       nixpkgsModule = {
@@ -312,7 +400,7 @@ let
       # Root module tree definition
       rootDef = {
         modules =
-          listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" ]; }) normalizedModules)
+          listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" "outputs" "_file" ]; }) normalizedModules)
           // { nixpkgs = builtins.removeAttrs nixpkgsModule [ "name" ]; }
           // { _collector = builtins.removeAttrs collector [ "name" ]; };
       };
@@ -389,7 +477,7 @@ let
         let
           pkgs = nixpkgsFor system;
           inputs' = mkInputsPrime flakeInputs system;
-          self' = mkSelfPrime self system;
+          self' = getSelfPrime system;
         in
         fn (builtins.intersectAttrs (functionArgs fn) {
           inherit lib pkgs system inputs' self';
