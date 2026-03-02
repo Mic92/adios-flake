@@ -37,7 +37,7 @@ numbers.
 ## Getting Started
 
 ```console
-nix flake init -t github:hercules-ci/adios-flake
+nix flake init -t github:Mic92/adios-flake
 ```
 
 ## Quick Example
@@ -45,7 +45,7 @@ nix flake init -t github:hercules-ci/adios-flake
 ```nix
 {
   inputs = {
-    adios-flake.url = "github:hercules-ci/adios-flake";
+    adios-flake.url = "github:Mic92/adios-flake";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
