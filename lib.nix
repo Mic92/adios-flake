@@ -58,6 +58,9 @@ let
 
   # Scan normalized modules for `outputs` declarations and merge with defaults.
   # Throws on conflicting merge types for the same category.
+  # Returns { declarations, flakeOutputs } where
+  # flakeOutputs is the list of category names that are
+  # flake-scoped (defaults + module-declared via scope = "flake").
   collectOutputDeclarations = modules:
     let
       # Collect all (moduleName, category, type) triples from module outputs
@@ -67,7 +70,9 @@ let
       collected = foldl' (acc: mod:
         foldl' (acc': cat:
           let
-            newType = mod.outputs.${cat}.type;
+            decl = mod.outputs.${cat};
+            newType = decl.type;
+            newScope = decl.scope or null;
             modName = mod.name or "?";
           in
           if acc'.declarations ? ${cat} then
@@ -80,9 +85,11 @@ let
             {
               declarations = acc'.declarations // { ${cat} = { type = newType; }; };
               declaredBy = acc'.declaredBy // { ${cat} = modName; };
+              flakeDeclarations = acc'.flakeDeclarations
+                ++ (if newScope == "flake" then [ cat ] else []);
             }
         ) acc (attrNames mod.outputs)
-      ) { declarations = {}; declaredBy = {}; } modulesWithOutputs;
+      ) { declarations = {}; declaredBy = {}; flakeDeclarations = []; } modulesWithOutputs;
 
       # Merge with defaults: module declarations override defaults,
       # but check for conflicts with defaults too
@@ -99,7 +106,10 @@ let
           acc // { ${cat} = { type = defaultType; }; }
       ) collected.declarations (attrNames defaultOutputDeclarations);
     in
-    mergedWithDefaults;
+    {
+      declarations = mergedWithDefaults;
+      flakeOutputs = defaultFlakeOutputs ++ collected.flakeDeclarations;
+    };
 
   # System-dependent argument names
   systemDepArgs = [ "pkgs" "system" "inputs'" "self'" ];
@@ -363,7 +373,6 @@ let
     , config ? {}
     , flake ? {}
     , self ? null
-    , flakeOutputs ? defaultFlakeOutputs
     }:
     assert inputs ? nixpkgs || throw "mkFlake: `inputs` must contain a `nixpkgs` input";
     assert isList systems || throw "mkFlake: `systems` must be a list of system strings";
@@ -375,7 +384,9 @@ let
       # native modules (structural access), not `impl`, so it's safe to
       # reference normalizedModules here even though normalizedModules
       # captures getSelfPrime which captures outputDeclarations.
-      outputDeclarations = collectOutputDeclarations normalizedModules;
+      collected = collectOutputDeclarations normalizedModules;
+      outputDeclarations = collected.declarations;
+      flakeOutputs = collected.flakeOutputs;
 
       # Category names derived from output declarations (for self')
       categoryNames = attrNames outputDeclarations;
@@ -593,5 +604,5 @@ let
 
 in
 {
-  inherit mkFlake defaultFlakeOutputs;
+  inherit mkFlake;
 }

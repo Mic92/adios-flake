@@ -119,22 +119,23 @@ in
     };
   };
 
-  # Custom flakeOutputs parameter routes a custom category.
-  testCustomFlakeOutputs = {
+  # Module declaring a custom flake-scoped category via outputs.
+  testCustomFlakeScopedCategory = {
     expr =
       let
         result = lib.mkFlake {
           inputs = { nixpkgs = nixpkgs; };
           systems = [ sys ];
-          flakeOutputs = lib.defaultFlakeOutputs ++ [ "containers" ];
           modules = [
-            ({ withSystem, ... }: {
-              containers.web = withSystem sys ({ system, ... }: "web-${system}");
-            })
+            {
+              name = "container-mod";
+              outputs = { containers = { type = "attrset"; scope = "flake"; }; };
+              impl = { ... }: { containers.web = "web-container"; };
+            }
           ];
         };
       in
       result.containers.web;
-    expected = "web-${sys}";
+    expected = "web-container";
   };
 }
