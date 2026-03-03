@@ -45,6 +45,17 @@ let
     formatter     = { type = "scalar"; };
   };
 
+  defaultFlakeOutputs = [
+    "nixosConfigurations"
+    "darwinConfigurations"
+    "nixosModules"
+    "darwinModules"
+    "homeModules"
+    "overlays"
+    "templates"
+    "lib"
+  ];
+
   # Scan normalized modules for `outputs` declarations and merge with defaults.
   # Throws on conflicting merge types for the same category.
   collectOutputDeclarations = modules:
@@ -105,6 +116,7 @@ let
     , self ? null
     , flakeInputs ? {}
     , getSelfPrime
+    , withSystem
     }:
     let
       # Normalize a single module with index for auto-naming
@@ -116,11 +128,11 @@ let
           let
             pathStr = toString mod;
             safeName = builtins.replaceStrings [ "/" ] [ "-" ] pathStr;
-            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime; };
+            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime withSystem; };
           in
           normalized // { _file = pathStr; }
         else if isFunction mod then
-          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime; }
+          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime withSystem; }
         else if isNativeModule mod then
           # Native adios module - use as-is, ensure it has a name
           mod // { name = mod.name or "_native_${toString idx}"; }
@@ -134,7 +146,7 @@ let
       # Add perSystem if provided
       perSystemModule =
         if perSystem != null then
-          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime; isPerSystem = true; }) ]
+          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime withSystem; isPerSystem = true; }) ]
         else
           [];
 
@@ -158,7 +170,7 @@ let
 
   # Normalize an ergonomic function module.
   # getSelfPrime: system → self' attrset (provided lazily by mkFlake)
-  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, isPerSystem ? false }:
+  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, withSystem, isPerSystem ? false }:
     let
       args = functionArgs fn;
       sysDep = isSystemDependent fn;
@@ -176,7 +188,7 @@ let
           null;
     in
     {
-      inherit name;
+      inherit name sysDep;
       inputs = if sysDep then { nixpkgs = { path = "/nixpkgs"; }; } else {};
       impl =
         if sysDep then
@@ -188,12 +200,12 @@ let
               self' = getSelfPrime system;
             in
             fn (builtins.intersectAttrs args {
-              inherit lib pkgs system inputs' self self';
+              inherit lib pkgs system inputs' self self' withSystem;
             })
         else
           { ... }:
             fn (builtins.intersectAttrs args ({
-              inherit self;
+              inherit self withSystem;
             } // (if lib != null then { inherit lib; } else {})));
     };
 
@@ -232,50 +244,86 @@ let
       value = self.${cat}.${system} or {};
     }) categories);
 
+  # Merge two attrsets, throwing on key collisions.
+  # mkMsg: key → error message string
+  mergeDisjoint = mkMsg: a: b:
+    let
+      collisions = filter (k: a ? ${k}) (attrNames b);
+    in
+    if collisions != []
+    then throw (mkMsg (head collisions))
+    else a // b;
 
-  # Build the collector module that merges all user module results.
-  # Only include modules that have an impl (produce results).
-  # outputDeclarations: category→{type} map for merge type awareness.
-  mkCollector = modules: resolveModuleName: outputDeclarations:
+  # Build a collector adios module that merges results from all user modules.
+  #
+  # acceptCat  — which categories to collect
+  # guardMod   — optional per-module gate (name → string|null; string = error)
+  # outputDeclarations — category→{type} map (null to skip scalar handling)
+  #
+  # Returns { merged, owners }.
+  mkResultCollector =
+    { name
+    , acceptCat
+    , guardMod ? _: null
+    , outputDeclarations ? null
+    , modules
+    , resolveModuleName
+    }:
     let
       callableNames = map (m: m.name) (filter (m: m ? impl) modules);
 
-      # Look up the merge type for a category.  Declared categories use their
-      # declared type; undeclared categories (from ergonomic modules) default
-      # to "attrset".
       mergeTypeOf = cat:
-        (outputDeclarations.${cat} or { type = "attrset"; }).type;
+        if outputDeclarations != null
+        then (outputDeclarations.${cat} or { type = "attrset"; }).type
+        else "attrset";
+
+      mergeAttrsetCat = acc': cat: name: value:
+        if acc'.merged ? ${cat} then
+          let
+            existing = acc'.merged.${cat};
+            entries = value.${cat};
+            prevOwners = acc'.owners.${cat};
+            merged = foldl' (catAcc: key:
+              if catAcc ? ${key}
+              then throw "mkFlake: conflict on ${cat}.${key} — defined by module '${prevOwners.${key} or "?"}' and '${name}'"
+              else catAcc // { ${key} = entries.${key}; }
+            ) existing (attrNames entries);
+            owners = prevOwners
+              // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
+          in
+          {
+            merged = acc'.merged // { ${cat} = merged; };
+            owners = acc'.owners // { ${cat} = owners; };
+          }
+        else
+          {
+            merged = acc'.merged // { ${cat} = value.${cat}; };
+            owners = acc'.owners // {
+              ${cat} = listToAttrs (map (k: {
+                name = k; value = name;
+              }) (attrNames value.${cat}));
+            };
+          };
     in
     {
-      name = "_collector";
+      inherit name;
       inputs = listToAttrs (map (n: { name = n; value = { path = "/${n}"; }; }) callableNames);
       impl = { results, ... }:
         let
-          # Pair each module result with its display name for error messages
           modPairs = map (modName: {
             name = resolveModuleName modName;
             value = results.${modName};
           }) (attrNames results);
 
-          # Merge results by output category.
-          # Category values are merged lazily — collision detection and the
-          # actual merge happen inside a lazy `let` binding so that thunks
-          # referencing `self` are not forced during collection.
-          #
-          # The accumulator stores { merged, owners } per category.
-          # For attrset categories:
-          #   merged.${cat} = lazy attrset of merged values
-          #   owners.${cat} = lazy attrset mapping key -> module name
-          # For scalar categories:
-          #   merged.${cat} = the scalar value
-          #   owners.${cat} = module name string (single owner)
           mergeOne = acc: { name, value }:
             foldl' (acc': cat:
-              let
-                catType = mergeTypeOf cat;
-              in
+              if ! acceptCat cat then acc'
+              else
+              let guard = guardMod name; in
+              if guard != null then throw guard
+              else
+              let catType = mergeTypeOf cat; in
               if catType == "scalar" then
-                # Scalar merge: exactly one provider allowed
                 if acc'.merged ? ${cat} then
                   throw "mkFlake: scalar output '${cat}' defined by module '${acc'.owners.${cat}}' and '${name}'"
                 else
@@ -284,48 +332,16 @@ let
                     owners = acc'.owners // { ${cat} = name; };
                   }
               else
-                # Attrset merge with collision detection
-                if acc'.merged ? ${cat} then
-                  let
-                    existing = acc'.merged.${cat};
-                    entries = value.${cat};
-                    prevOwners = acc'.owners.${cat};
-                    # All lazy — attrNames/foldl' here only runs when
-                    # someone accesses this category in the final output.
-                    merged = foldl' (catAcc: key:
-                      if catAcc ? ${key}
-                      then throw "mkFlake: conflict on ${cat}.${key} — defined by module '${prevOwners.${key} or "?"}' and '${name}'"
-                      else catAcc // { ${key} = entries.${key}; }
-                    ) existing (attrNames entries);
-                    owners = prevOwners
-                      // listToAttrs (map (k: { name = k; value = name; }) (attrNames entries));
-                  in
-                  {
-                    merged = acc'.merged // { ${cat} = merged; };
-                    owners = acc'.owners // { ${cat} = owners; };
-                  }
-                else
-                  {
-                    merged = acc'.merged // { ${cat} = value.${cat}; };
-                    # Lazy: attrNames only forced when collision is checked
-                    owners = acc'.owners // {
-                      ${cat} = listToAttrs (map (k: {
-                        name = k; value = name;
-                      }) (attrNames value.${cat}));
-                    };
-                  }
+                mergeAttrsetCat acc' cat name value
             ) acc (attrNames value);
         in
         foldl' mergeOne { merged = {}; owners = {}; } modPairs;
     };
 
   # Transpose { system -> { category.name } } to { category -> { system -> { name } } }
-  # Scalar categories (non-plain-attrset values like formatter) are passed
-  # through directly as category.${system} = value.
   transpose = perSystemResults:
     let
       systems = attrNames perSystemResults;
-      # Collect all categories across all systems
       allCategories = builtins.foldl' (acc: sys:
         acc ++ (filter (c: ! elem c acc) (attrNames perSystemResults.${sys}))
       ) [] systems;
@@ -347,6 +363,7 @@ let
     , config ? {}
     , flake ? {}
     , self ? null
+    , flakeOutputs ? defaultFlakeOutputs
     }:
     assert inputs ? nixpkgs || throw "mkFlake: `inputs` must contain a `nixpkgs` input";
     assert isList systems || throw "mkFlake: `systems` must be a list of system strings";
@@ -366,9 +383,20 @@ let
       # getSelfPrime: system → self' — captures categories lazily
       getSelfPrime = mkSelfPrime categoryNames self;
 
+      withSystem = system: fn:
+        let
+          pkgs = nixpkgsFor system;
+          inputs' = mkInputsPrime flakeInputs system;
+          self' = getSelfPrime system;
+        in
+        fn (builtins.intersectAttrs (functionArgs fn) {
+          lib = flakeInputs.nixpkgs.lib;
+          inherit pkgs system inputs' self';
+        });
+
       # Normalize all user modules
       normalizedModules = normalizeModules {
-        inherit modules perSystem self getSelfPrime;
+        inherit modules perSystem self getSelfPrime withSystem;
         inherit flakeInputs;
       };
 
@@ -381,8 +409,29 @@ let
       );
       resolveModuleName = name: moduleFileMap.${name} or name;
 
-      # Build the collector
-      collector = mkCollector normalizedModules resolveModuleName outputDeclarations;
+      # Resolved names of system-dependent modules
+      sysDepNames = map (m: resolveModuleName m.name)
+        (filter (m: m.sysDep or false) normalizedModules);
+
+      # Per-system collector (excludes flake-scoped keys)
+      collector = mkResultCollector {
+        name = "_collector";
+        acceptCat = cat: ! elem cat flakeOutputs;
+        inherit outputDeclarations resolveModuleName;
+        modules = normalizedModules;
+      };
+
+      # Flake collector (only flake-scoped keys, rejects system-dependent modules)
+      flakeCollector = mkResultCollector {
+        name = "_flake";
+        acceptCat = cat: elem cat flakeOutputs;
+        guardMod = modName:
+          if elem modName sysDepNames
+          then "mkFlake: module '${modName}' produces flake-scoped output but depends on system-specific arguments (pkgs, system, inputs', self'). Split it into a per-system module and a system-independent module that uses `withSystem`."
+          else null;
+        modules = normalizedModules;
+        inherit resolveModuleName;
+      };
 
       # Build the /nixpkgs internal module
       nixpkgsModule = {
@@ -402,7 +451,8 @@ let
         modules =
           listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" "outputs" "_file" ]; }) normalizedModules)
           // { nixpkgs = builtins.removeAttrs nixpkgsModule [ "name" ]; }
-          // { _collector = builtins.removeAttrs collector [ "name" ]; };
+          // { _collector = builtins.removeAttrs collector [ "name" ]; }
+          // { _flake = builtins.removeAttrs flakeCollector [ "name" ]; };
       };
 
       # Convert config parameter to adios option paths
@@ -416,7 +466,7 @@ let
       # Include all modules in the resolution by providing (possibly empty)
       # options for each. This ensures adios resolves the full dependency graph
       # and enables memoization via evalModuleTree.results.
-      allModulePaths = map (n: "/${n}") (moduleNames ++ [ "_collector" "nixpkgs" ]);
+      allModulePaths = map (n: "/${n}") (moduleNames ++ [ "_collector" "_flake" "nixpkgs" ]);
       emptyModuleOptions = listToAttrs (map (p: { name = p; value = {}; }) allModulePaths);
 
       # Evaluate for the first system
@@ -435,11 +485,8 @@ let
       # First full evaluation
       firstTree = adiosLib rootDef { options = mkOptions firstSystem; };
 
-      # Collect results per system using evalModuleTree results (memoized)
-      # rather than calling __functor which bypasses memoization.
-      collectResults = tree:
-        let collectorPath = "/_collector";
-        in tree.modules._collector {};
+      # Collect per-system results
+      collectResults = tree: tree.modules._collector {};
 
       # Collector returns { merged, owners } per system
       firstCollected = collectResults firstTree;
@@ -471,30 +518,39 @@ let
       # Transpose to flake output shape
       transposed = transpose perSystemResults;
 
-      # Handle flake parameter (attrset or function)
-      lib = flakeInputs.nixpkgs.lib or null;
-      withSystem = system: fn:
-        let
-          pkgs = nixpkgsFor system;
-          inputs' = mkInputsPrime flakeInputs system;
-          self' = getSelfPrime system;
-        in
-        fn (builtins.intersectAttrs (functionArgs fn) {
-          inherit lib pkgs system inputs' self';
-        });
+      # Collect flake-scoped outputs (evaluated once — system-independent)
+      flakeCollected = firstTree.modules._flake {};
+      moduleFlakeAttrs = flakeCollected.merged;
+      flakeOwners = flakeCollected.owners;
 
-      flakeAttrs =
+      # Resolve the user-provided `flake` parameter
+      userFlakeAttrs =
         if isFunction flake then
           flake { inherit withSystem; }
         else
           flake;
 
+      # Merge module flake outputs with user flake parameter
+      allFlakeAttrs = foldl' (acc: cat:
+        let
+          mVal = moduleFlakeAttrs.${cat} or null;
+          uVal = userFlakeAttrs.${cat} or null;
+          catOwners = flakeOwners.${cat} or {};
+          val =
+            if mVal == null then uVal
+            else if uVal == null then mVal
+            else mergeDisjoint
+              (k: "mkFlake: conflict on flake output '${cat}' — '${k}' defined by module '${catOwners.${k} or "?"}' and by the 'flake' argument")
+              mVal uVal;
+        in
+        acc // { ${cat} = val; }
+      ) {} (attrNames (moduleFlakeAttrs // userFlakeAttrs));
+
       # Deep-merge transposed per-system outputs with flake-level attrs.
       # Merge goes 2 levels deep (category → system) so that e.g.
       # `flake.checks.x86_64-linux.foo` merges with per-system
       # `checks.x86_64-linux.bar` instead of replacing it entirely.
-      # Collisions at the leaf key level throw an error.
-      mergeFlakeOutputs = transposed: flakeAttrs:
+      mergeOutputs = transposed: flakeAttrs:
         let
           allCats = attrNames (transposed // flakeAttrs);
         in
@@ -508,7 +564,7 @@ let
             value =
               if tVal == null then fVal
               else if fVal == null then tVal
-              else if isAttrs tVal && isAttrs fVal then
+              else
                 # Both sides have this category — merge one level deeper (by system)
                 let
                   allSystems = attrNames (tVal // fVal);
@@ -517,38 +573,25 @@ let
                   let
                     tSys = tVal.${sys} or null;
                     fSys = fVal.${sys} or null;
+                    sysOwners = perSystemOwners.${sys}.${cat} or {};
                   in
                   {
                     name = sys;
                     value =
                       if tSys == null then fSys
                       else if fSys == null then tSys
-                      else if isAttrs tSys && isAttrs fSys then
-                        let
-                          collisions = filter (k: tSys ? ${k}) (attrNames fSys);
-                          # Look up which module defined each colliding key
-                          sysOwners = perSystemOwners.${sys}.${cat} or {};
-                          collisionMsgs = map (k:
-                            "'${k}' defined by module '${sysOwners.${k} or "?"}' and by the 'flake' argument in flake.nix"
-                          ) collisions;
-                        in
-                        if collisions != [] then
-                          throw "mkFlake: conflict on ${cat}.${sys} — ${concatStringsSep "; " collisionMsgs}"
-                        else
-                          tSys // fSys
-                      else
-                        throw "mkFlake: cannot merge flake attr '${cat}.${sys}' — one side is not an attrset";
+                      else mergeDisjoint
+                        (k: "mkFlake: conflict on ${cat}.${sys} — '${k}' defined by module '${sysOwners.${k} or "?"}' and by the 'flake' argument")
+                        tSys fSys;
                   }
-                ) allSystems)
-              else
-                throw "mkFlake: cannot merge flake attr '${cat}' — one side is not an attrset";
+                ) allSystems);
           }
         ) allCats);
 
     in
-    mergeFlakeOutputs transposed flakeAttrs;
+    mergeOutputs transposed allFlakeAttrs;
 
 in
 {
-  inherit mkFlake;
+  inherit mkFlake defaultFlakeOutputs;
 }
