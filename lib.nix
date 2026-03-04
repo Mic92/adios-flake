@@ -469,7 +469,7 @@ let
       # Convert config parameter to adios option paths
       configOptions = listToAttrs (concatMap (key:
         let
-          path = "/${builtins.replaceStrings [ "/" ] [ "/" ] key}";
+          path = if builtins.substring 0 1 key == "/" then key else "/${key}";
         in
         [ { name = path; value = config.${key}; } ]
       ) (attrNames config));
