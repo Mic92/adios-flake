@@ -51,7 +51,6 @@ Simple constant contributions:
 adios-flake.lib.mkFlake {
   inherit inputs self;
   systems = [ "x86_64-linux" ];
-  self = self;
   modules = [
     ({ pkgs, ... }: { packages.hello = pkgs.hello; })
     ({ self', ... }: { checks.test = self'.packages.hello; })
@@ -82,7 +81,6 @@ adios-flake.lib.mkFlake {
 adios-flake.lib.mkFlake {
   inherit inputs self;
   systems = [ "x86_64-linux" ];
-  self = self;
   perSystem = { pkgs, ... }: { packages.default = pkgs.hello; };
   flake = { withSystem }: {
     nixosConfigurations.myhost = withSystem "x86_64-linux" ({ pkgs, self', ... }:

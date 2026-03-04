@@ -95,7 +95,6 @@ Users and other modules can then contribute to the new category:
 adios-flake.lib.mkFlake {
   inherit inputs self;
   systems = [ "x86_64-linux" ];
-  self = self;
   modules = [
     container-framework.flakeModule
     # Contribute to the declared category
