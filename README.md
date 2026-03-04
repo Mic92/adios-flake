@@ -65,6 +65,10 @@ nix flake init -t github:Mic92/adios-flake
 - **[Writing Reusable Modules](docs/writing-modules.md)** — native adios modules, output declarations, custom categories
 - **[Benchmarks](BENCHMARKS.md)** — performance comparison with flake-parts
 
+## Ecosystem
+
+- **[red-tape](https://github.com/phaer/red-tape)** — Convention-based Nix project builder on top of adios-flake, inspired by [blueprint](https://github.com/numtide/blueprint). Drop your Nix files in the right places, and red-tape turns them into a complete flake — packages, devshells, checks, NixOS hosts, modules, templates, and lib — with zero boilerplate.
+
 ## Acknowledgements
 
 adios-flake stands on the shoulders of
