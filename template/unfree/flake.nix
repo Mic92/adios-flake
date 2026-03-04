@@ -2,7 +2,7 @@
   description = "Description for the project";
 
   inputs = {
-    adios-flake.url = "github:hercules-ci/adios-flake";
+    adios-flake.url = "github:Mic92/adios-flake";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
