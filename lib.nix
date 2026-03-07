@@ -396,7 +396,7 @@ let
 
       withSystem = system: fn:
         let
-          pkgs = nixpkgsFor system;
+          pkgs = nixpkgsBySystem.${system};
           inputs' = mkInputsPrime flakeInputs system;
           self' = getSelfPrime system;
         in
@@ -457,11 +457,20 @@ let
         };
       };
 
+      # Flake-scoped companion to /nixpkgs.  Exposes the shared
+      # nixpkgs-by-system cache so that flake-scoped native modules
+      # (e.g. host builders) can obtain pkgs without an extra import.
+      nixpkgsBySystemModule = {
+        name = "nixpkgsBySystem";
+        impl = { ... }: nixpkgsBySystem;
+      };
+
       # Root module tree definition
       rootDef = {
         modules =
           listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" "outputs" "_file" ]; }) normalizedModules)
           // { nixpkgs = builtins.removeAttrs nixpkgsModule [ "name" ]; }
+          // { nixpkgsBySystem = builtins.removeAttrs nixpkgsBySystemModule [ "name" ]; }
           // { _collector = builtins.removeAttrs collector [ "name" ]; }
           // { _flake = builtins.removeAttrs flakeCollector [ "name" ]; };
       };
@@ -477,19 +486,25 @@ let
       # Include all modules in the resolution by providing (possibly empty)
       # options for each. This ensures adios resolves the full dependency graph
       # and enables memoization via evalModuleTree.results.
-      allModulePaths = map (n: "/${n}") (moduleNames ++ [ "_collector" "_flake" "nixpkgs" ]);
+      allModulePaths = map (n: "/${n}") (moduleNames ++ [ "_collector" "_flake" "nixpkgs" "nixpkgsBySystem" ]);
       emptyModuleOptions = listToAttrs (map (p: { name = p; value = {}; }) allModulePaths);
 
       # Evaluate for the first system
       firstSystem = head systems;
       remainingSystems = tail systems;
 
-      nixpkgsFor = system: import inputs.nixpkgs { inherit system; };
+      # Lazily import nixpkgs once per configured system.  Attribute
+      # access shares the thunk so every consumer (mkOptions,
+      # withSystem, subsequentCollected) reuses a single instantiation.
+      nixpkgsBySystem = listToAttrs (map (s: {
+        name = s;
+        value = import inputs.nixpkgs { system = s; };
+      }) systems);
 
       mkOptions = system: emptyModuleOptions // configOptions // {
         "/nixpkgs" = {
           system = system;
-          pkgs = nixpkgsFor system;
+          pkgs = nixpkgsBySystem.${system};
         };
       };
 
@@ -510,7 +525,7 @@ let
             options = {
               "/nixpkgs" = {
                 system = sys;
-                pkgs = nixpkgsFor sys;
+                pkgs = nixpkgsBySystem.${sys};
               };
             };
           };
