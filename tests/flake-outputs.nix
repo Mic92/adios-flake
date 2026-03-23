@@ -19,16 +19,19 @@ in
             ({ system, ... }: { packages.foo = "foo-${system}"; })
             ({ ... }: { nixosModules.mod-a = "a"; })
             ({ ... }: { nixosModules.mod-b = "b"; })
+            ({ ... }: { modules.nixos.server = "srv"; })
           ];
         };
       in
       {
         mods = result.nixosModules;
+        modHierarchy = result.modules;
         pkgX86 = result.packages.x86_64-linux.foo;
         pkgArm = result.packages.aarch64-linux.foo;
       };
     expected = {
       mods = { mod-a = "a"; mod-b = "b"; };
+      modHierarchy = { nixos.server = "srv"; };
       pkgX86 = "foo-x86_64-linux";
       pkgArm = "foo-aarch64-linux";
     };
@@ -91,12 +94,19 @@ in
         merged = lib.mkFlake {
           inputs = { nixpkgs = nixpkgs; };
           systems = [ sys ];
-          modules = [ ({ ... }: { nixosModules.from-module = "module-val"; }) ];
-          flake = { nixosModules.from-flake = "flake-val"; };
+          modules = [
+            ({ ... }: { nixosModules.from-module = "module-val"; })
+            ({ ... }: { modules.nixos.from-module = "mod-val"; })
+          ];
+          flake = {
+            nixosModules.from-flake = "flake-val";
+            modules.home.from-flake = "home-val";
+          };
         };
       in
       {
         merge = merged.nixosModules;
+        modMerge = merged.modules;
         collisionFlake = throws (lib.mkFlake {
           inputs = { nixpkgs = nixpkgs; };
           systems = [ sys ];
@@ -114,6 +124,7 @@ in
       };
     expected = {
       merge = { from-module = "module-val"; from-flake = "flake-val"; };
+      modMerge = { nixos.from-module = "mod-val"; home.from-flake = "home-val"; };
       collisionFlake = true;
       collisionModules = true;
     };
