@@ -51,6 +51,7 @@ let
     "nixosModules"
     "darwinModules"
     "homeModules"
+    "modules"
     "overlays"
     "templates"
     "lib"
