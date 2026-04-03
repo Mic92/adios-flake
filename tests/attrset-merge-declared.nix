@@ -12,10 +12,9 @@ in
 {
   # Two modules with overlapping keys in a declared attrset category throw
   testDeclaredAttrsetCollision = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
+      imports = [
         {
           name = "mod-a";
           outputs = { packages = { type = "attrset"; }; };
@@ -33,10 +32,9 @@ in
 
   # Custom declared attrset category with collision detection
   testCustomAttrsetCollision = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
+      imports = [
         {
           name = "mod-a";
           outputs = { containers = { type = "attrset"; }; };

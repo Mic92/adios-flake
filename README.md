@@ -48,9 +48,8 @@ nix flake init -t github:Mic92/adios-flake
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = inputs@{ adios-flake, self, ... }:
-    adios-flake.lib.mkFlake {
-      inherit inputs self;
+  outputs = inputs@{ adios-flake, ... }:
+    adios-flake.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
       perSystem = { pkgs, ... }: {
         packages.default = pkgs.hello;

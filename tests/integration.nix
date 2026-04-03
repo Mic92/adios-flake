@@ -12,8 +12,7 @@ in
   testSimpleTemplate = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ "x86_64-linux" "aarch64-linux" ];
           perSystem = { pkgs, system, ... }: {
             packages.default = "hello-${system}";
@@ -30,24 +29,21 @@ in
     };
   };
 
-  # 6.2 Multiple module styles: ergonomic function + native adios module + static attrset
+  # 6.2 Multiple module styles: perSystem closure + native adios module
   testMultipleModuleStyles = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            # Ergonomic function
-            ({ pkgs, ... }: { packages.from-fn = "fn-val"; })
-            # Native adios module
+          imports = [
+            # perSystem closure (ergonomic function)
+            { perSystem = { pkgs, ... }: { packages.from-fn = "fn-val"; }; }
+            # Native adios module — passes straight through to the engine
             {
               name = "native";
               inputs.nixpkgs = { path = "/nixpkgs"; };
               impl = { inputs, ... }: { packages.from-native = inputs.nixpkgs.system; };
             }
-            # Static attrset
-            { packages.from-static = "static-val"; }
           ];
         };
       in
@@ -55,7 +51,6 @@ in
     expected = {
       from-fn = "fn-val";
       from-native = sys;
-      from-static = "static-val";
     };
   };
 
@@ -63,10 +58,9 @@ in
   testThirdPartyConfig = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "treefmt";
               options.projectRootFile = { type = types.string; default = "default.nix"; };
@@ -86,24 +80,24 @@ in
     expected = "flake.nix:alejandra";
   };
 
-  # 6.4 self is available in ergonomic functions
+  # 6.4 self is available in top-level module functions
   testSelfAvailable = {
     expr =
       let
         fakeSelf = { outPath = "/my/flake"; rev = "abc123"; };
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; self = fakeSelf; }; } {
           systems = [ sys ];
-          self = fakeSelf;
-          modules = [
-            # System-independent function using self
-            ({ self, ... }: { packages.src = self.outPath; })
-            # System-dependent function using self
-            ({ self, system, ... }: { packages.info = "${self.rev}-${system}"; })
+          imports = [
+            # Top-level function using self → flake-scoped output
+            ({ self, ... }: { flake.src = self.outPath; })
+            # self captured in perSystem closure
+            ({ self, ... }: {
+              perSystem = { system, ... }: { packages.info = "${self.rev}-${system}"; };
+            })
           ];
         };
       in
-      result.packages.${sys};
+      { src = result.src; info = result.packages.${sys}.info; };
     expected = {
       src = "/my/flake";
       info = "abc123-${sys}";
@@ -114,15 +108,13 @@ in
   testSelfPrimeCrossModule = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; self = result; }; } {
           systems = [ sys ];
-          self = result;
-          modules = [
+          imports = [
             # Module A defines a package
-            ({ pkgs, ... }: { packages.hello = "hello-pkg"; })
+            { perSystem = { pkgs, ... }: { packages.hello = "hello-pkg"; }; }
             # Module B reads module A's package via self'
-            ({ self', ... }: { checks.test = "tested-${self'.packages.hello}"; })
+            { perSystem = { self', ... }: { checks.test = "tested-${self'.packages.hello}"; }; }
           ];
         };
       in
@@ -140,8 +132,7 @@ in
   testLibAvailable = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
           perSystem = { lib, ... }: {
             packages.greeting = lib.concatStringsSep ", " [ "hello" "world" ];
@@ -152,40 +143,37 @@ in
     expected = "hello, world";
   };
 
-  # lib in system-independent module
-  testLibInPureModule = {
+  # lib in top-level module function
+  testLibInTopLevel = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
-          systems = [ sys ];
-          modules = [
-            ({ lib, ... }: { packages.x = lib.optionalString true "yes"; })
-          ];
-        };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } (
+          { lib, ... }: {
+            systems = [ sys ];
+            flake.x = lib.optionalString true "yes";
+          }
+        );
       in
-      result.packages.${sys}.x;
+      result.x;
     expected = "yes";
   };
 
-  # 6.6 withSystem in flake function (nixosConfigurations pattern)
+  # 6.6 withSystem in top-level module (nixosConfigurations pattern)
   testWithSystemFlake = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
-          systems = [ sys ];
-          self = result;
-          perSystem = { pkgs, ... }: {
-            packages.default = "my-default-pkg";
-          };
-          flake = { withSystem }: {
-            nixosConfigurations.myhost = withSystem sys ({ pkgs, self', system, ... }: {
+        result = lib.mkFlake { inputs = { inherit nixpkgs; self = result; }; } (
+          { withSystem, ... }: {
+            systems = [ sys ];
+            perSystem = { pkgs, ... }: {
+              packages.default = "my-default-pkg";
+            };
+            flake.nixosConfigurations.myhost = withSystem sys ({ pkgs, self', system, ... }: {
               system = system;
               defaultPkg = self'.packages.default;
             });
-          };
-        };
+          }
+        );
       in
       {
         system = result.nixosConfigurations.myhost.system;
@@ -203,11 +191,11 @@ in
   testNestedSubmoduleConfig = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
+              _type = "adiosModule";
               name = "treefmt";
               options.projectRootFile = { type = types.string; default = "default.nix"; };
               modules.nixfmt = {

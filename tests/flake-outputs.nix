@@ -12,14 +12,13 @@ in
   testFlakeAndPerSystemRouting = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ "x86_64-linux" "aarch64-linux" ];
-          modules = [
-            ({ system, ... }: { packages.foo = "foo-${system}"; })
-            ({ ... }: { nixosModules.mod-a = "a"; })
-            ({ ... }: { nixosModules.mod-b = "b"; })
-            ({ ... }: { modules.nixos.server = "srv"; })
+          imports = [
+            { perSystem = { system, ... }: { packages.foo = "foo-${system}"; }; }
+            { flake.nixosModules.mod-a = "a"; }
+            { flake.nixosModules.mod-b = "b"; }
+            { flake.modules.nixos.server = "srv"; }
           ];
         };
       in
@@ -37,44 +36,22 @@ in
     };
   };
 
-  # System-dependent module must not produce flake-scoped output.
-  testMixedPerSystemAndFlakeThrows = {
-    expr = throws (
-      let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
-          systems = [ sys ];
-          modules = [
-            ({ system, ... }: {
-              packages.hello = "hello-${system}";
-              nixosModules.mymod = "my-mod";
-            })
-          ];
-        };
-      in
-      result.nixosModules.mymod
-    );
-    expected = true;
-  };
-
-  # withSystem in modules and in the flake parameter both work with self'.
+  # withSystem available to top-level module functions for flake-scoped outputs.
   testWithSystem = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; self = result; }; } {
           systems = [ sys ];
-          self = result;
           perSystem = { ... }: { packages.default = "my-pkg"; };
-          modules = [
+          imports = [
             ({ withSystem, ... }: {
-              nixosConfigurations.from-module = withSystem sys ({ self', ... }:
+              flake.nixosConfigurations.from-module = withSystem sys ({ self', ... }:
                 self'.packages.default);
             })
+            ({ withSystem, ... }: {
+              flake.nixosConfigurations.from-flake = withSystem sys ({ system, ... }: system);
+            })
           ];
-          flake = { withSystem }: {
-            nixosConfigurations.from-flake = withSystem sys ({ system, ... }: system);
-          };
         };
       in
       {
@@ -87,16 +64,15 @@ in
     };
   };
 
-  # Module flake outputs merge with `flake` parameter; collisions throw.
+  # `flake.*` from multiple imports deep-merges; perSystem collisions still throw.
   testFlakeMergeAndCollisions = {
     expr =
       let
-        merged = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        merged = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ ... }: { nixosModules.from-module = "module-val"; })
-            ({ ... }: { modules.nixos.from-module = "mod-val"; })
+          imports = [
+            { flake.nixosModules.from-module = "module-val"; }
+            { flake.modules.nixos.from-module = "mod-val"; }
           ];
           flake = {
             nixosModules.from-flake = "flake-val";
@@ -107,26 +83,18 @@ in
       {
         merge = merged.nixosModules;
         modMerge = merged.modules;
-        collisionFlake = throws (lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        collisionPerSystem = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [ ({ ... }: { nixosModules.x = "a"; }) ];
-          flake = { nixosModules.x = "b"; };
-        }).nixosModules.x;
-        collisionModules = throws (lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
-          systems = [ sys ];
-          modules = [
-            ({ ... }: { nixosModules.x = "a"; })
-            ({ ... }: { nixosModules.x = "b"; })
+          imports = [
+            { perSystem = { ... }: { packages.x = "a"; }; }
+            { perSystem = { ... }: { packages.x = "b"; }; }
           ];
-        }).nixosModules.x;
+        }).packages.${sys}.x;
       };
     expected = {
       merge = { from-module = "module-val"; from-flake = "flake-val"; };
       modMerge = { nixos.from-module = "mod-val"; home.from-flake = "home-val"; };
-      collisionFlake = true;
-      collisionModules = true;
+      collisionPerSystem = true;
     };
   };
 
@@ -134,10 +102,9 @@ in
   testCustomFlakeScopedCategory = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "container-mod";
               outputs = { containers = { type = "attrset"; scope = "flake"; }; };

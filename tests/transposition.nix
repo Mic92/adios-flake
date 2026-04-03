@@ -9,12 +9,9 @@ in
   testSingleCategory = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           inherit systems;
-          modules = [
-            ({ system, ... }: { packages.foo = "foo-${system}"; })
-          ];
+          perSystem = { system, ... }: { packages.foo = "foo-${system}"; };
         };
       in
       result.packages;
@@ -28,12 +25,9 @@ in
   testMultipleCategories = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           inherit systems;
-          modules = [
-            ({ system, ... }: { packages.foo = "pkg-${system}"; checks.bar = "chk-${system}"; })
-          ];
+          perSystem = { system, ... }: { packages.foo = "pkg-${system}"; checks.bar = "chk-${system}"; };
         };
       in
       {
@@ -56,17 +50,13 @@ in
   testCategorySubset = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           inherit systems;
-          modules = [
-            ({ system, ... }:
-              { packages.foo = "foo-${system}"; }
-              // (if system == "x86_64-linux"
-                  then { checks.linux-only = "linux-check"; }
-                  else {})
-            )
-          ];
+          perSystem = { system, ... }:
+            { packages.foo = "foo-${system}"; }
+            // (if system == "x86_64-linux"
+                then { checks.linux-only = "linux-check"; }
+                else {});
         };
       in
       {

@@ -11,10 +11,9 @@ in
 {
   # Conflicting declarations should throw
   testConflictingDeclarationsThrow = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
+      imports = [
         {
           name = "mod-a";
           outputs = { foo = { type = "attrset"; }; };
@@ -34,10 +33,9 @@ in
   testConsistentRedeclarations = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "mod-a";
               outputs = { packages = { type = "attrset"; }; };
@@ -59,10 +57,9 @@ in
   testRedeclareDefaultCategory = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "checker";
               outputs = { checks = { type = "attrset"; }; };
