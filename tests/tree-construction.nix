@@ -8,23 +8,22 @@ let
     in !result.success;
 in
 {
-  # perSystem + modules combined
-  testPerSystemAndModules = {
+  # perSystem + imports combined
+  testPerSystemAndImports = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
           perSystem = { pkgs, ... }: { packages.from-perSystem = "ps"; };
-          modules = [
-            ({ pkgs, ... }: { packages.from-modules = "mod"; })
+          imports = [
+            { perSystem = { pkgs, ... }: { packages.from-import = "mod"; }; }
           ];
         };
       in
       result.packages.${sys};
     expected = {
       from-perSystem = "ps";
-      from-modules = "mod";
+      from-import = "mod";
     };
   };
 
@@ -32,10 +31,9 @@ in
   testConfigOptions = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "mymod";
               options.greeting = { type = types.string; default = "hello"; };
@@ -53,13 +51,12 @@ in
   testMultipleCategories = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ pkgs, ... }: { packages.pkg1 = "p1"; })
-            ({ pkgs, ... }: { checks.chk1 = "c1"; })
-            ({ pkgs, ... }: { devShells.default = "ds"; })
+          imports = [
+            { perSystem = { pkgs, ... }: { packages.pkg1 = "p1"; }; }
+            { perSystem = { pkgs, ... }: { checks.chk1 = "c1"; }; }
+            { perSystem = { pkgs, ... }: { devShells.default = "ds"; }; }
           ];
         };
       in
@@ -75,8 +72,7 @@ in
   testFlakeAndPerSystem = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
           perSystem = { pkgs, ... }: { packages.hello = "hello"; };
           flake = { nixosModules.default = "mod"; };

@@ -20,20 +20,18 @@ in
           };
         };
 
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; self = result; }; } {
           inherit systems;
-          self = result;
-          modules = [
+          imports = [
             containerFrameworkModule
             # User module contributes to the declared category
-            ({ system, ... }: {
-              containers.web = "nginx-${system}";
-            })
+            { perSystem = { system, ... }: {
+                containers.web = "nginx-${system}";
+              }; }
             # Another user module reads containers via self'
-            ({ self', ... }: {
-              checks.container-exists = "verified-${self'.containers.web}";
-            })
+            { perSystem = { self', ... }: {
+                checks.container-exists = "verified-${self'.containers.web}";
+              }; }
           ];
         };
       in

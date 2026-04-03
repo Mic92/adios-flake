@@ -13,10 +13,9 @@ in
   testScalarOneProvider = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
+          imports = [
             {
               name = "fmt";
               outputs = { formatter = { type = "scalar"; }; };
@@ -32,10 +31,9 @@ in
 
   # Two modules provide a scalar output — throws
   testScalarTwoProvidersThrows = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
+      imports = [
         {
           name = "fmt-a";
           outputs = { formatter = { type = "scalar"; }; };
@@ -55,12 +53,9 @@ in
   testScalarZeroProviders = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ pkgs, ... }: { packages.hello = "hello"; })
-          ];
+          perSystem = { pkgs, ... }: { packages.hello = "hello"; };
         };
       in
       result ? formatter;

@@ -24,15 +24,14 @@ in
           };
         };
 
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           inherit systems;
-          modules = [
+          imports = [
             treefmtModule
             # User module adds its own checks (non-overlapping)
-            ({ system, ... }: {
-              checks.my-test = "test-${system}";
-            })
+            { perSystem = { system, ... }: {
+                checks.my-test = "test-${system}";
+              }; }
           ];
           config.treefmt = { projectRootFile = "project.toml"; };
         };

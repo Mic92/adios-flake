@@ -6,12 +6,10 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = inputs@{ adios-flake, self, ... }:
-    adios-flake.lib.mkFlake {
-      inherit inputs self;
+  outputs = inputs@{ adios-flake, ... }:
+    adios-flake.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-darwin" ];
-      modules = [
-        # Pass paths directly
+      imports = [
         ./hello/flake-module.nix
       ];
       perSystem = { pkgs, inputs', ... }: {

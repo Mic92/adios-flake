@@ -1,7 +1,7 @@
 # Writing Reusable Modules
 
-For simple cases, ergonomic functions and static attrsets are all you need.
-When you're building a reusable module — something published as a flake
+For simple cases, `perSystem` closures and `flake.*` attrsets are all you
+need. When you're building a reusable module — something published as a flake
 input for others to consume — native adios modules give you typed options,
 explicit dependencies, and the ability to declare new output categories.
 
@@ -23,16 +23,21 @@ a dependency on the internal nixpkgs node — this is how native modules access
 }
 ```
 
-Consumers configure them via the `config` parameter:
+Consumers configure them via the `config` key:
 
 ```nix
-adios-flake.lib.mkFlake {
-  inherit inputs self;
+adios-flake.lib.mkFlake { inherit inputs; } {
   systems = [ "x86_64-linux" ];
-  modules = [ treefmt-nix.flakeModule ];
+  imports = [ treefmt-nix.flakeModule ];
   config.treefmt = { projectRootFile = "project.toml"; };
 };
 ```
+
+Native modules are recognised in `imports` by the presence of `impl`,
+`outputs`, or an explicit `_type = "adiosModule"` marker (the marker is only
+needed for the rare options-only or modules-only module that has neither
+`impl` nor `outputs`). They pass straight through to the evaluation engine
+instead of being walked like a flake-parts module body.
 
 ## Output Declarations
 
@@ -92,19 +97,18 @@ Users and other modules can then contribute to the new category:
 
 ```nix
 # User's flake
-adios-flake.lib.mkFlake {
-  inherit inputs self;
+adios-flake.lib.mkFlake { inherit inputs; } {
   systems = [ "x86_64-linux" ];
-  modules = [
+  imports = [
     container-framework.flakeModule
     # Contribute to the declared category
-    ({ system, ... }: {
-      containers.web = mkWebContainer system;
-    })
+    { perSystem = { system, ... }: {
+        containers.web = mkWebContainer system;
+      }; }
     # Read it via self'
-    ({ self', ... }: {
-      checks.container-test = testContainer self'.containers.web;
-    })
+    { perSystem = { self', ... }: {
+        checks.container-test = testContainer self'.containers.web;
+      }; }
   ];
 };
 ```
@@ -163,25 +167,24 @@ as attrset, with configurable options:
 Usage:
 
 ```nix
-adios-flake.lib.mkFlake {
-  inherit inputs self;
+adios-flake.lib.mkFlake { inherit inputs; } {
   systems = [ "x86_64-linux" ];
-  modules = [ treefmt-nix.flakeModule ];
+  imports = [ treefmt-nix.flakeModule ];
   config.treefmt = { projectRootFile = "project.toml"; };
 };
 ```
 
-## Ergonomic Modules Don't Need Declarations
+## perSystem Closures Don't Need Declarations
 
-Simple function modules and static attrsets never need `outputs`. Their
-return keys are automatically treated as `"attrset"` categories:
+`perSystem` closures never need `outputs`. Their return keys are
+automatically treated as `"attrset"` categories:
 
 ```nix
 # This just works — no outputs declaration needed
-({ pkgs, ... }: {
+perSystem = { pkgs, ... }: {
   packages.hello = pkgs.hello;
   checks.test = pkgs.runCommand "test" {} "touch $out";
-})
+};
 ```
 
 Output declarations are only needed when a module:

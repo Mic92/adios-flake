@@ -10,10 +10,9 @@ in
   testScalarFormatterShape = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           inherit systems;
-          modules = [
+          imports = [
             {
               name = "treefmt";
               outputs = { formatter = { type = "scalar"; }; };

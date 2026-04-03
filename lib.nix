@@ -12,9 +12,7 @@ let
 
   inherit (builtins)
     attrNames
-    attrValues
     concatMap
-    concatStringsSep
     elem
     filter
     foldl'
@@ -28,11 +26,6 @@ let
     head
     tail
     ;
-
-  # Check if an attrset is a native adios module (has structural keys)
-  adiosStructuralKeys = [ "options" "inputs" "impl" "modules" "outputs" ];
-  isNativeModule = m:
-    isAttrs m && builtins.any (key: m ? ${key}) adiosStructuralKeys;
 
   # Default output category declarations.
   # These are always present even when no module declares outputs.
@@ -120,48 +113,26 @@ let
     let args = functionArgs fn;
     in builtins.any (arg: args ? ${arg}) systemDepArgs;
 
-  # Auto-naming counters
+  # Normalize the engine's input list. By the time we're here the public
+  # `mkFlake` walker has already imported paths and called top-level
+  # functions; the engine sees exactly two shapes:
+  #   - perSystem closures (functions) → wrapped as adios modules
+  #   - native adios modules (attrsets) → used verbatim, given a name
   normalizeModules =
     { modules
-    , perSystem ? null
-    , self ? null
     , flakeInputs ? {}
     , getSelfPrime
-    , withSystem
     }:
     let
-      # Normalize a single module with index for auto-naming
       normalizeOne = idx: mod:
-        if builtins.isPath mod then
-          # Path: import it and use the file path for error messages.
-          # Replace '/' with '-' for the adios tree key (which uses '/'
-          # as a path separator) but keep the original path as `_file`.
-          let
-            pathStr = toString mod;
-            safeName = builtins.replaceStrings [ "/" ] [ "-" ] pathStr;
-            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime withSystem; };
-          in
-          normalized // { _file = pathStr; }
-        else if isFunction mod then
-          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime withSystem; }
-        else if isNativeModule mod then
-          # Native adios module - use as-is, ensure it has a name
-          mod // { name = mod.name or "_native_${toString idx}"; }
-        else if isAttrs mod then
-          normalizeStatic idx mod
+        if isFunction mod then
+          normalizeFunction idx mod { inherit flakeInputs getSelfPrime; }
         else
-          throw "mkFlake: module at index ${toString idx} is not a function, attrset, or native adios module";
+          # Native adios module — the public walker only ever passes
+          # functions or native attrsets, never anything else.
+          mod // { name = mod.name or "_native_${toString idx}"; };
 
-      normalizedModules = builtins.genList (idx: normalizeOne idx (builtins.elemAt modules idx)) (length modules);
-
-      # Add perSystem if provided
-      perSystemModule =
-        if perSystem != null then
-          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime withSystem; isPerSystem = true; }) ]
-        else
-          [];
-
-      allModules = normalizedModules ++ perSystemModule;
+      allModules = builtins.genList (idx: normalizeOne idx (builtins.elemAt modules idx)) (length modules);
 
       # Check for duplicate names
       names = map (m: m.name) allModules;
@@ -179,19 +150,17 @@ let
     then throw "mkFlake: duplicate module name(s): ${builtins.concatStringsSep ", " dups}"
     else allModules;
 
-  # Normalize an ergonomic function module.
-  # getSelfPrime: system → self' attrset (provided lazily by mkFlake)
-  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, withSystem, isPerSystem ? false }:
+  # Wrap a perSystem closure as an adios module.
+  #
+  # The closure's argument set decides whether it routes through the
+  # /nixpkgs node or not. A perSystem that asks for none of
+  # pkgs/system/inputs'/self' has no adios input edge — the diff
+  # propagation in evalModuleTree.override skips it on subsequent
+  # systems, so it evaluates exactly once.
+  normalizeFunction = idx: fn: { flakeInputs, getSelfPrime }:
     let
       args = functionArgs fn;
       sysDep = isSystemDependent fn;
-      name = if isPerSystem then "_perSystem"
-             else if builtins.isInt idx then "_fn_${toString idx}"
-             else toString idx;
-      # Extract lib from the nixpkgs flake input (cheap — no package eval).
-      # The nixpkgs flake always exposes a top-level `lib`.  When nixpkgs
-      # is a plain path (e.g. <nixpkgs> in tests), fall back to importing
-      # just the lib/ subdirectory — no package evaluation needed.
       lib =
         if flakeInputs ? nixpkgs then
           flakeInputs.nixpkgs.lib or (import (flakeInputs.nixpkgs + "/lib"))
@@ -199,7 +168,8 @@ let
           null;
     in
     {
-      inherit name sysDep;
+      name = "_fn_${toString idx}";
+      inherit sysDep;
       inputs = if sysDep then { nixpkgs = { path = "/nixpkgs"; }; } else {};
       impl =
         if sysDep then
@@ -211,20 +181,10 @@ let
               self' = getSelfPrime system;
             in
             fn (builtins.intersectAttrs args {
-              inherit lib pkgs system inputs' self self' withSystem;
+              inherit lib pkgs system inputs' self';
             })
         else
-          { ... }:
-            fn (builtins.intersectAttrs args ({
-              inherit self withSystem;
-            } // (if lib != null then { inherit lib; } else {})));
-    };
-
-  # Normalize a static attrset module
-  normalizeStatic = idx: attrs:
-    {
-      name = "_static_${toString idx}";
-      impl = { ... }: attrs;
+          { ... }: fn (builtins.intersectAttrs args { inherit lib; });
     };
 
   # Build inputs' from flake inputs for a given system
@@ -278,7 +238,6 @@ let
     , guardMod ? _: null
     , outputDeclarations ? null
     , modules
-    , resolveModuleName
     }:
     let
       callableNames = map (m: m.name) (filter (m: m ? impl) modules);
@@ -322,7 +281,7 @@ let
       impl = { results, ... }:
         let
           modPairs = map (modName: {
-            name = resolveModuleName modName;
+            name = modName;
             value = results.${modName};
           }) (attrNames results);
 
@@ -365,12 +324,14 @@ let
       }) systems);
     }) allCategories);
 
-  # The main mkFlake function
-  mkFlake =
+  # The evaluation engine. Private — called by the public `mkFlake` after
+  # the user's module tree has been walked and flattened. Returns
+  # `{ outputs, withSystem }` so the walker can lazily feed `withSystem`
+  # back into top-level module arguments through the let-rec fixpoint.
+  engine =
     { inputs
     , systems
     , modules ? []
-    , perSystem ? null
     , config ? {}
     , flake ? {}
     , self ? null
@@ -406,30 +367,20 @@ let
           inherit pkgs system inputs' self';
         });
 
-      # Normalize all user modules
       normalizedModules = normalizeModules {
-        inherit modules perSystem self getSelfPrime withSystem;
-        inherit flakeInputs;
+        inherit modules getSelfPrime flakeInputs;
       };
 
       moduleNames = map (m: m.name) normalizedModules;
 
-      # Map safe module names back to file paths for error messages
-      moduleFileMap = listToAttrs (
-        filter (x: x.value != null)
-          (map (m: { name = m.name; value = m._file or null; }) normalizedModules)
-      );
-      resolveModuleName = name: moduleFileMap.${name} or name;
-
-      # Resolved names of system-dependent modules
-      sysDepNames = map (m: resolveModuleName m.name)
+      sysDepNames = map (m: m.name)
         (filter (m: m.sysDep or false) normalizedModules);
 
       # Per-system collector (excludes flake-scoped keys)
       collector = mkResultCollector {
         name = "_collector";
         acceptCat = cat: ! elem cat flakeOutputs;
-        inherit outputDeclarations resolveModuleName;
+        inherit outputDeclarations;
         modules = normalizedModules;
       };
 
@@ -442,7 +393,6 @@ let
           then "mkFlake: module '${modName}' produces flake-scoped output but depends on system-specific arguments (pkgs, system, inputs', self'). Split it into a per-system module and a system-independent module that uses `withSystem`."
           else null;
         modules = normalizedModules;
-        inherit resolveModuleName;
       };
 
       # Build the /nixpkgs internal module
@@ -461,7 +411,7 @@ let
       # Root module tree definition
       rootDef = {
         modules =
-          listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" "outputs" "_file" ]; }) normalizedModules)
+          listToAttrs (map (m: { name = m.name; value = builtins.removeAttrs m [ "name" "outputs" ]; }) normalizedModules)
           // { nixpkgs = builtins.removeAttrs nixpkgsModule [ "name" ]; }
           // { _collector = builtins.removeAttrs collector [ "name" ]; }
           // { _flake = builtins.removeAttrs flakeCollector [ "name" ]; };
@@ -535,18 +485,11 @@ let
       moduleFlakeAttrs = flakeCollected.merged;
       flakeOwners = flakeCollected.owners;
 
-      # Resolve the user-provided `flake` parameter
-      userFlakeAttrs =
-        if isFunction flake then
-          flake { inherit withSystem; }
-        else
-          flake;
-
       # Merge module flake outputs with user flake parameter
       allFlakeAttrs = foldl' (acc: cat:
         let
           mVal = moduleFlakeAttrs.${cat} or null;
-          uVal = userFlakeAttrs.${cat} or null;
+          uVal = flake.${cat} or null;
           catOwners = flakeOwners.${cat} or {};
           val =
             if mVal == null then uVal
@@ -556,7 +499,7 @@ let
               mVal uVal;
         in
         acc // { ${cat} = val; }
-      ) {} (attrNames (moduleFlakeAttrs // userFlakeAttrs));
+      ) {} (attrNames (moduleFlakeAttrs // flake));
 
       # Deep-merge transposed per-system outputs with flake-level attrs.
       # Merge goes 2 levels deep (category → system) so that e.g.
@@ -601,7 +544,108 @@ let
         ) allCats);
 
     in
-    mergeOutputs transposed allFlakeAttrs;
+    {
+      outputs = mergeOutputs transposed allFlakeAttrs;
+      inherit withSystem;
+    };
+
+  # Left-biased recursive attrset merge — used to fold `flake.*`
+  # contributions from all modules in the import tree.
+  recursiveMerge = a: b:
+    if isAttrs a && isAttrs b
+    then a // mapAttrs (k: bv: if a ? ${k} then recursiveMerge a.${k} bv else bv) b
+    else b;
+
+  # A native adios module appearing in `imports` is detected structurally
+  # so it can pass straight through to the engine instead of being walked
+  # like a flake-parts module body. `impl` and `outputs` are unique to
+  # adios; `_type` is the explicit escape hatch for the rare options-only
+  # or modules-only native module that has neither.
+  #
+  # `_type` is stripped before the module reaches adios — it's purely a
+  # routing hint for the walker.
+  isAdiosNative = r:
+    r._type or null == "adiosModule"
+    || r ? impl
+    || (r ? outputs && isAttrs r.outputs);
+
+  # Public entrypoint — flake-parts compatible (issue #15).
+  #
+  #   mkFlake { inherit inputs; } module
+  #
+  # `module` is a path, attrset, or function returning an attrset with:
+  #   systems    list of system strings (must be set somewhere in the tree)
+  #   imports    further modules — walked recursively, depth-first
+  #   perSystem  { pkgs, system, inputs', self', lib, ... } -> per-system attrs
+  #   flake      system-agnostic outputs (deep-merged across all modules)
+  #   config     adios option configuration by module name
+  #
+  # Module functions receive `{ inputs, self, lib, withSystem, …specialArgs }`.
+  # `withSystem` comes from the engine via lazy fixpoint — safe to capture
+  # in `flake.*` thunks but must not be forced while computing `imports`
+  # or `systems`.
+  #
+  # Native adios modules (have `impl` / `outputs` / `_type = "adiosModule"`)
+  # placed in `imports` pass through verbatim to the engine.
+  #
+  # This is signature-level compatibility, not full NixOS module semantics:
+  # `imports` are merged structurally, with no `mkIf`, priorities, or
+  # submodule options.
+  mkFlake = args@{ inputs, specialArgs ? {} }: mod:
+    let
+      self = args.self or inputs.self or null;
+      flakeInputs = builtins.removeAttrs inputs [ "self" ];
+      nixpkgsLib =
+        if flakeInputs ? nixpkgs
+        then flakeInputs.nixpkgs.lib or (import (flakeInputs.nixpkgs + "/lib"))
+        else null;
+
+      topArgs = {
+        inherit inputs self;
+        lib = nixpkgsLib;
+        withSystem = eng.withSystem;
+      } // specialArgs;
+
+      # Resolve one node to a plain attrset.
+      resolve = m:
+        if builtins.isPath m || builtins.isString m then resolve (import m)
+        else if isFunction m then m topArgs
+        else if isAttrs m then m
+        else throw "mkFlake: import is not a path, function, or attrset";
+
+      # Depth-first flatten. Adios-native entries are collected verbatim;
+      # flake-parts bodies have their `imports` recursed and stripped.
+      flatten = m:
+        let r = resolve m; in
+        if isAdiosNative r then [ { adios = builtins.removeAttrs r [ "_type" ]; } ]
+        else
+          let children = r.imports or []; in
+          concatMap flatten children
+          ++ [ { body = builtins.removeAttrs r [ "imports" "_file" ]; } ];
+
+      flat = flatten mod;
+      bodies    = map (x: x.body)  (filter (x: x ? body)  flat);
+      adiosMods = map (x: x.adios) (filter (x: x ? adios) flat);
+
+      systemsSet = filter (b: b ? systems) bodies;
+      systems =
+        if systemsSet == [] then throw "mkFlake: no module set `systems`"
+        else (head systemsSet).systems;
+
+      # `perSystem` closures are exactly the ergonomic-function shape the
+      # engine already understands — no wrapping needed. Adios-native
+      # modules go in alongside them.
+      perSystemFns = filter (f: f != null) (map (b: b.perSystem or null) bodies);
+
+      flake  = foldl' recursiveMerge {} (map (b: b.flake  or {}) bodies);
+      config = foldl' (a: b: a // b) {} (map (b: b.config or {}) bodies);
+
+      eng = engine {
+        inherit inputs systems self config flake;
+        modules = perSystemFns ++ adiosMods;
+      };
+    in
+    eng.outputs;
 
 in
 {

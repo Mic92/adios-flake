@@ -10,14 +10,15 @@ let
   systems = [ "x86_64-linux" "aarch64-linux" ];
 
   # A result using two systems where one module is pure (no pkgs/system dep)
-  result = lib.mkFlake {
-    inputs = { nixpkgs = nixpkgs; };
+  result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
     inherit systems;
-    modules = [
-      # System-independent: should be memoized (evaluated once)
-      ({ ... }: { packages.meta = builtins.trace "PURE_MODULE_EVAL" "v1"; })
+    imports = [
+      # System-independent: a perSystem closure that asks for none of
+      # the per-system args. The engine sees this as a pure ergonomic
+      # function and memoizes it across systems.
+      { perSystem = { ... }: { packages.meta = builtins.trace "PURE_MODULE_EVAL" "v1"; }; }
       # System-dependent: evaluated per system
-      ({ system, ... }: { packages.sys = builtins.trace "SYS_MODULE_EVAL" system; })
+      { perSystem = { system, ... }: { packages.sys = builtins.trace "SYS_MODULE_EVAL" system; }; }
     ];
   };
 in

@@ -10,12 +10,11 @@ in
 {
   # Two modules setting the same key within the same category should throw
   testModuleKeyCollision = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
-        ({ ... }: { checks.foo = "from-module-a"; })
-        ({ ... }: { checks.foo = "from-module-b"; })
+      imports = [
+        { perSystem = { ... }: { checks.foo = "from-module-a"; }; }
+        { perSystem = { ... }: { checks.foo = "from-module-b"; }; }
       ];
     }).checks.${sys}.foo;
     expected = true;
@@ -25,12 +24,11 @@ in
   testModuleNoCollision = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ ... }: { checks.foo = "from-module-a"; })
-            ({ ... }: { checks.bar = "from-module-b"; })
+          imports = [
+            { perSystem = { ... }: { checks.foo = "from-module-a"; }; }
+            { perSystem = { ... }: { checks.bar = "from-module-b"; }; }
           ];
         };
       in
@@ -43,12 +41,9 @@ in
 
   # flake attrs colliding with per-system transposed outputs should throw
   testFlakeVsPerSystemCollision = {
-    expr = throws (lib.mkFlake {
-      inputs = { nixpkgs = nixpkgs; };
+    expr = throws (lib.mkFlake { inputs = { inherit nixpkgs; }; } {
       systems = [ sys ];
-      modules = [
-        ({ ... }: { checks.my-check = "from-module"; })
-      ];
+      perSystem = { ... }: { checks.my-check = "from-module"; };
       flake = {
         checks.${sys}.my-check = "from-flake";
       };
@@ -60,12 +55,9 @@ in
   testFlakeVsPerSystemNoCollision = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ ... }: { checks.from-module = "module-val"; })
-          ];
+          perSystem = { ... }: { checks.from-module = "module-val"; };
           flake = {
             checks.${sys}.from-flake = "flake-val";
           };
@@ -82,12 +74,9 @@ in
   testFlakeOnlyCategory = {
     expr =
       let
-        result = lib.mkFlake {
-          inputs = { nixpkgs = nixpkgs; };
+        result = lib.mkFlake { inputs = { inherit nixpkgs; }; } {
           systems = [ sys ];
-          modules = [
-            ({ ... }: { packages.hello = "hello-pkg"; })
-          ];
+          perSystem = { ... }: { packages.hello = "hello-pkg"; };
           flake = {
             nixosConfigurations.myhost = "myhost-config";
           };

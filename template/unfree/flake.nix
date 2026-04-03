@@ -6,9 +6,8 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
-  outputs = inputs@{ adios-flake, nixpkgs, self, ... }:
-    adios-flake.lib.mkFlake {
-      inherit inputs self;
+  outputs = inputs@{ adios-flake, nixpkgs, ... }:
+    adios-flake.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-darwin" ];
       perSystem = { system, ... }:
         let
