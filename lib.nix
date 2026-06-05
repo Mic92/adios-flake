@@ -48,6 +48,7 @@ let
   defaultFlakeOutputs = [
     "nixosConfigurations"
     "darwinConfigurations"
+    "homeConfigurations"
     "nixosModules"
     "darwinModules"
     "homeModules"
