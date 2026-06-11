@@ -128,6 +128,7 @@ let
     , flakeInputs ? {}
     , getSelfPrime
     , withSystem
+    , moduleWithSystem
     }:
     let
       # Normalize a single module with index for auto-naming
@@ -139,11 +140,11 @@ let
           let
             pathStr = toString mod;
             safeName = builtins.replaceStrings [ "/" ] [ "-" ] pathStr;
-            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime withSystem; };
+            normalized = normalizeFunction safeName (import mod) { inherit self flakeInputs getSelfPrime withSystem moduleWithSystem; };
           in
           normalized // { _file = pathStr; }
         else if isFunction mod then
-          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime withSystem; }
+          normalizeFunction idx mod { inherit self flakeInputs getSelfPrime withSystem moduleWithSystem; }
         else if isNativeModule mod then
           # Native adios module - use as-is, ensure it has a name
           mod // { name = mod.name or "_native_${toString idx}"; }
@@ -157,7 +158,7 @@ let
       # Add perSystem if provided
       perSystemModule =
         if perSystem != null then
-          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime withSystem; isPerSystem = true; }) ]
+          [ (normalizeFunction "_perSystem" perSystem { inherit self flakeInputs getSelfPrime withSystem moduleWithSystem; isPerSystem = true; }) ]
         else
           [];
 
@@ -181,7 +182,7 @@ let
 
   # Normalize an ergonomic function module.
   # getSelfPrime: system → self' attrset (provided lazily by mkFlake)
-  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, withSystem, isPerSystem ? false }:
+  normalizeFunction = idx: fn: { self, flakeInputs, getSelfPrime, withSystem, moduleWithSystem, isPerSystem ? false }:
     let
       args = functionArgs fn;
       sysDep = isSystemDependent fn;
@@ -211,12 +212,12 @@ let
               self' = getSelfPrime system;
             in
             fn (builtins.intersectAttrs args {
-              inherit lib pkgs system inputs' self self' withSystem;
+              inherit lib pkgs system inputs' self self' withSystem moduleWithSystem;
             })
         else
           { ... }:
             fn (builtins.intersectAttrs args ({
-              inherit self withSystem;
+              inherit self withSystem moduleWithSystem;
             } // (if lib != null then { inherit lib; } else {})));
     };
 
@@ -406,9 +407,22 @@ let
           inherit pkgs system inputs' self';
         });
 
+      moduleWithSystem = m: { config, ... }:
+        let
+          system =
+            config._module.args.system or config._module.args.pkgs.stdenv.hostPlatform.system
+              or (throw "moduleWithSystem: Could not determine the configuration's system parameter for this module system application.");
+        in
+        {
+          imports = [
+            (withSystem system m)
+          ];
+        };
+
+
       # Normalize all user modules
       normalizedModules = normalizeModules {
-        inherit modules perSystem self getSelfPrime withSystem;
+        inherit modules perSystem self getSelfPrime withSystem moduleWithSystem;
         inherit flakeInputs;
       };
 
@@ -538,7 +552,7 @@ let
       # Resolve the user-provided `flake` parameter
       userFlakeAttrs =
         if isFunction flake then
-          flake { inherit withSystem; }
+          flake { inherit withSystem moduleWithSystem; }
         else
           flake;
 
