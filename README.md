@@ -1,7 +1,5 @@
 # adios-flake
 
-> ⚠️ **Alpha** — API may change. Not yet recommended for production use.
-
 _Composable flake outputs using the adios module system — the ergonomics of
 flake-parts without the evaluation overhead._
 
